@@ -3,8 +3,8 @@ from pathlib import Path
 
 
 def main():
-    output_path = Path('output')
-    image_dir = Path('images')
+    output_path = Path('temp/output')
+    image_dir = Path('temp/images')
 
     output_path.mkdir()
     mvs_path = output_path / "mvs"
