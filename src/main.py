@@ -32,6 +32,15 @@ def main():
     match_features.main(matcher_conf, sfm_pairs,
                         features=features, matches=matches)
 
+    # 2. Generate 3D reconstruction
+    model = reconstruction.main(
+        sfm_dir, image_dir, sfm_pairs, features, matches, image_list=references)
+
+    fig = viz_3d.init_figure()
+    viz_3d.plot_reconstruction(
+        fig, model, color='rgba(255,0,0,0.5)', name="mapping", points_rgb=True)
+    fig.show()
+
     # output_path.mkdir()
     # mvs_path = output_path / "mvs"
     # database_path = output_path / "database.db"
