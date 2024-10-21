@@ -1,14 +1,24 @@
 import pycolmap
 from pathlib import Path
+import shutil
+import os
 
 from third_party.Hierarchical_Localization.hloc import extract_features, match_features, reconstruction, visualization, pairs_from_exhaustive
 from third_party.Hierarchical_Localization.hloc.visualization import plot_images, read_image
 from third_party.Hierarchical_Localization.hloc.utils import viz_3d
 
+def delete_directory_if_exists(directory_path):
+    if directory_path.exists():
+        shutil.rmtree(directory_path)
+        print(f"Deleted directory: {directory_path}")
+    else:
+        print(f"Directory does not exist: {directory_path}")
 
 def main():
-    output_path = Path('temp/output')
     image_dir = Path('temp/images/')
+    output_path = Path('temp/output')
+    delete_directory_if_exists(output_path)
+    output_path.mkdir() 
 
     sfm_pairs = output_path / 'pairs-sfm.txt'
     loc_pairs = output_path / 'pairs-loc.txt'
