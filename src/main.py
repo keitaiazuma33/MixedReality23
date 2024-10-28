@@ -16,6 +16,8 @@ from third_party.Hierarchical_Localization.hloc.reconstruction import create_emp
 from . import myreconstruction
 from third_party.Hierarchical_Localization.hloc.triangulation import OutputCapture, import_features, import_matches, estimation_and_geometric_verification, parse_option_args
 from . import generate_pairs
+from third_party.colmap.pycolmap.examples import custom_incremental_mapping
+
 
 def delete_directory_if_exists(directory_path):
     if directory_path.exists():
@@ -23,6 +25,7 @@ def delete_directory_if_exists(directory_path):
         print(f"Deleted directory: {directory_path}")
     else:
         print(f"Directory does not exist: {directory_path}")
+
 
 def run_reconstruction(
     sfm_dir: Path,
@@ -57,13 +60,14 @@ def run_reconstruction(
             largest_num_images = num_images
     assert largest_index is not None
     guru.info(
-        f"Largest model is #{largest_index} " f"with {largest_num_images} images."
+        f"Largest model is #{largest_index} with {largest_num_images} images."
     )
 
     for filename in ["images.bin", "cameras.bin", "points3D.bin"]:
         if (sfm_dir / filename).exists():
             (sfm_dir / filename).unlink()
-        shutil.move(str(models_path / str(largest_index) / filename), str(sfm_dir))
+        shutil.move(
+            str(models_path / str(largest_index) / filename), str(sfm_dir))
     return reconstructions[largest_index]
 
 
@@ -112,6 +116,7 @@ def reconstruct(
         )
     return reconstruction
 
+
 def update_reconstruction(
     sfm_dir: Path,
     image_dir: Path,
@@ -133,9 +138,11 @@ def update_reconstruction(
     sfm_dir.mkdir(parents=True, exist_ok=True)
     database = sfm_dir / "database.db"
 
-    myreconstruction.import_new_images(image_dir, database, camera_mode, image_list, image_options)
+    myreconstruction.import_new_images(
+        image_dir, database, camera_mode, image_list, image_options)
     image_ids = get_image_ids(database)
-    myreconstruction.import_new_features(image_dir, image_ids, database, features)
+    myreconstruction.import_new_features(
+        image_dir, image_ids, database, features)
     import_matches(
         image_ids,
         database,
@@ -146,15 +153,19 @@ def update_reconstruction(
     )
     if not skip_geometric_verification:
         estimation_and_geometric_verification(database, pairs, verbose)
-    reconstruction = run_reconstruction(
-        sfm_dir, database, image_dir, verbose, mapper_options
-    )
+
+    recs = custom_incremental_mapping.main(
+        database, image_dir, sfm_dir, None, sfm_dir)
+    # reconstruction = run_reconstruction(
+    #     sfm_dir, database, image_dir, verbose, mapper_options
+    # )
     if reconstruction is not None:
         guru.info(
             f"Reconstruction statistics:\n{reconstruction.summary()}"
             + f"\n\tnum_input_images = {len(image_ids)}"
         )
     return reconstruction
+
 
 def append_new_pairs(sfm_pairs_path, sfm_new_pairs_path):
     # ファイルパスをPathオブジェクトに変換
@@ -163,31 +174,34 @@ def append_new_pairs(sfm_pairs_path, sfm_new_pairs_path):
 
     with sfm_pairs.open('r') as f:
         sfm_pairs_content = f.readlines()
-    
+
     with sfm_new_pairs.open('r') as f:
         sfm_new_pairs_content = f.readlines()
-    
+
     if sfm_pairs_content and not sfm_pairs_content[-1].endswith('\n'):
         sfm_pairs_content.append('\n')
-    
+
     sfm_pairs_content.extend(sfm_new_pairs_content)
-    
+
     # sfm_pairsファイルを上書き保存
     with sfm_pairs.open('w') as f:
         f.writelines(sfm_pairs_content)
 
+
 def main(
         scene_name: str = 'sacre_coeur',
         resume: bool = False,
-        ):
+):
     parser = argparse.ArgumentParser()
-    parser.add_argument('scene_name', type=str, nargs='?', default='sacre_coeur', help='Name of the scene')
-    parser.add_argument('--resume', action='store_true', help='Flag to indicate if the process should resume')
+    parser.add_argument('scene_name', type=str, nargs='?',
+                        default='sacre_coeur', help='Name of the scene')
+    parser.add_argument('--resume', action='store_true',
+                        help='Flag to indicate if the process should resume')
     args = parser.parse_args()
 
     scene_name = args.scene_name
     resume = args.resume
-    
+
     image_dir = Path(f'temp/images/{scene_name}')
     output_path = Path(f'temp/outputs/{scene_name}')
     if not resume:
@@ -204,41 +218,48 @@ def main(
     matcher_conf = match_features.confs['superpoint+lightglue']
 
     # 1. Feature extraction and matching
-    references = sorted([str(p.relative_to(image_dir)) for p in image_dir.iterdir()])
+    references = sorted([str(p.relative_to(image_dir))
+                        for p in image_dir.iterdir()])
     print(f"References: {references}")
 
     if not resume:
         print(f"Generating Exhaustive pairs...")    # Creates pairs-sfm.txt
         pairs_from_exhaustive.main(sfm_pairs, image_list=references)
-        print(f"Extracting Features for images...") # Creates features.h5
-        extract_features.main(feature_conf, image_dir, image_list=references, feature_path=features)
+        print(f"Extracting Features for images...")  # Creates features.h5
+        extract_features.main(feature_conf, image_dir,
+                              image_list=references, feature_path=features)
         print(f"Matching extracted features...")    # Creates matches.h5
-        match_features.main(matcher_conf, sfm_pairs, features=features, matches=matches)
+        match_features.main(matcher_conf, sfm_pairs,
+                            features=features, matches=matches)
         # 2. Generate 3D reconstruction
-        recon = reconstruct(sfm_dir, image_dir, sfm_pairs, features, matches, image_list=references)
+        recon = reconstruct(sfm_dir, image_dir, sfm_pairs,
+                            features, matches, image_list=references)
     else:
         print(f"Resuming from existing pairs-sfm.txt...")
         sfm_new_pairs = output_path / 'pairs-sfm_new.txt'
-        generate_pairs.generate_new_pairs(sfm_pairs, sfm_new_pairs, image_list=references, ref_list=references)
+        generate_pairs.generate_new_pairs(
+            sfm_pairs, sfm_new_pairs, image_list=references, ref_list=references)
         append_new_pairs(sfm_pairs, sfm_new_pairs)
-        print(f"Extracting Features for new images...") # Creates features.h5
-        extract_features.main(feature_conf, image_dir, image_list=references, feature_path=features)
+        print(f"Extracting Features for new images...")  # Creates features.h5
+        extract_features.main(feature_conf, image_dir,
+                              image_list=references, feature_path=features)
         print(f"Matching extracted features...")    # Creates matches.h5
-        match_features.main(matcher_conf, sfm_new_pairs, features=features, matches=matches, overwrite=True)
+        match_features.main(matcher_conf, sfm_new_pairs,
+                            features=features, matches=matches, overwrite=True)
         # 2. Generate 3D reconstruction
-        recon = update_reconstruction(sfm_dir, image_dir, sfm_new_pairs, features, matches, image_list=references)
+        recon = update_reconstruction(
+            sfm_dir, image_dir, sfm_new_pairs, features, matches, image_list=references)
 
+    # # De-register image: removes points associated with the image(?)
+    # print(f"De-registering an image...")
+    # image_ids = recon.reg_image_ids()
+    # recon.deregister_image(image_ids[0])
+    # print(recon.summary())
 
-    # De-register image: removes points associated with the image(?)
-    print(f"De-registering an image...")
-    image_ids = recon.reg_image_ids()
-    recon.deregister_image(image_ids[0])
-    print(recon.summary())
-
-    # Re-register image: does NOT recompute the points associated with the image
-    print(f"Re-registering an image...")
-    recon.register_image(image_ids[0])
-    print(recon.summary())
+    # # Re-register image: does NOT recompute the points associated with the image
+    # print(f"Re-registering an image...")
+    # recon.register_image(image_ids[0])
+    # print(recon.summary())
 
     """
     fig = viz_3d.init_figure()
