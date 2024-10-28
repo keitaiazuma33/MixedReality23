@@ -44,3 +44,27 @@ def import_new_images(
         db.add_image(last_image.name, camera_id)
         db.commit()
         db.close()
+
+def import_new_features(
+    image_dir: Path,
+    image_ids: Dict[str, int],
+    database_path: Path,
+    features_path: Path
+):
+    guru.info("Importing new features into the database...")
+    db = COLMAPDatabase.connect(database_path)
+
+    images = list(image_dir.iterdir())
+    if len(images) == 0:
+        raise IOError(f"No images found in {image_dir}.")
+    
+    last_image = images[-1]
+
+    for image_name, image_id in tqdm(image_ids.items()):
+        if image_name == last_image.name:
+            keypoints = get_keypoints(features_path, image_name)
+            keypoints += 0.5  # COLMAP origin
+            db.add_keypoints(image_id, keypoints)
+
+    db.commit()
+    db.close()
