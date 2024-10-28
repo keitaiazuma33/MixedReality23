@@ -4,3 +4,6 @@
 [submodule "third_party/Hierarchical_Localization"]
 	path = third_party/Hierarchical_Localization
 	url = https://github.com/cvg/Hierarchical-Localization.git
+[submodule "third_party/colmap_310"]
+	path = third_party/colmap_310
+	url = git@github.com:colmap/colmap.git
