@@ -1,4 +1,5 @@
 import pycolmap
+import argparse
 from pathlib import Path
 import shutil
 import os
@@ -12,6 +13,7 @@ from third_party.Hierarchical_Localization.hloc.visualization import plot_images
 from third_party.Hierarchical_Localization.hloc.utils import viz_3d
 from third_party.Hierarchical_Localization.hloc.utils.database import COLMAPDatabase
 from third_party.Hierarchical_Localization.hloc.reconstruction import create_empty_db, import_images, get_image_ids
+from . import myreconstruction
 from third_party.Hierarchical_Localization.hloc.triangulation import OutputCapture, import_features, import_matches, estimation_and_geometric_verification, parse_option_args
 from . import generate_pairs
 
@@ -110,10 +112,82 @@ def reconstruct(
         )
     return reconstruction
 
+def update_reconstruction(
+    sfm_dir: Path,
+    image_dir: Path,
+    pairs: Path,
+    features: Path,
+    matches: Path,
+    camera_mode: pycolmap.CameraMode = pycolmap.CameraMode.AUTO,
+    verbose: bool = False,
+    skip_geometric_verification: bool = False,
+    min_match_score: Optional[float] = None,
+    image_list: Optional[List[str]] = None,
+    image_options: Optional[Dict[str, Any]] = None,
+    mapper_options: Optional[Dict[str, Any]] = None,
+) -> pycolmap.Reconstruction:
+    assert features.exists(), features
+    assert pairs.exists(), pairs
+    assert matches.exists(), matches
+
+    sfm_dir.mkdir(parents=True, exist_ok=True)
+    database = sfm_dir / "database.db"
+
+    myreconstruction.import_new_images(image_dir, database, camera_mode, image_list, image_options)
+    image_ids = get_image_ids(database)
+    myreconstruction.import_new_features(image_dir, image_ids, database, features)
+    import_matches(
+        image_ids,
+        database,
+        pairs,
+        matches,
+        min_match_score,
+        skip_geometric_verification,
+    )
+    if not skip_geometric_verification:
+        estimation_and_geometric_verification(database, pairs, verbose)
+    reconstruction = run_reconstruction(
+        sfm_dir, database, image_dir, verbose, mapper_options
+    )
+    if reconstruction is not None:
+        guru.info(
+            f"Reconstruction statistics:\n{reconstruction.summary()}"
+            + f"\n\tnum_input_images = {len(image_ids)}"
+        )
+    return reconstruction
+
+def append_new_pairs(sfm_pairs_path, sfm_new_pairs_path):
+    # ファイルパスをPathオブジェクトに変換
+    sfm_pairs = Path(sfm_pairs_path)
+    sfm_new_pairs = Path(sfm_new_pairs_path)
+
+    with sfm_pairs.open('r') as f:
+        sfm_pairs_content = f.readlines()
+    
+    with sfm_new_pairs.open('r') as f:
+        sfm_new_pairs_content = f.readlines()
+    
+    if sfm_pairs_content and not sfm_pairs_content[-1].endswith('\n'):
+        sfm_pairs_content.append('\n')
+    
+    sfm_pairs_content.extend(sfm_new_pairs_content)
+    
+    # sfm_pairsファイルを上書き保存
+    with sfm_pairs.open('w') as f:
+        f.writelines(sfm_pairs_content)
+
 def main(
         scene_name: str = 'sacre_coeur',
-        resume: bool = True,
+        resume: bool = False,
         ):
+    parser = argparse.ArgumentParser()
+    parser.add_argument('scene_name', type=str, nargs='?', default='sacre_coeur', help='Name of the scene')
+    parser.add_argument('--resume', action='store_true', help='Flag to indicate if the process should resume')
+    args = parser.parse_args()
+
+    scene_name = args.scene_name
+    resume = args.resume
+    
     image_dir = Path(f'temp/images/{scene_name}')
     output_path = Path(f'temp/outputs/{scene_name}')
     if not resume:
@@ -140,15 +214,20 @@ def main(
         extract_features.main(feature_conf, image_dir, image_list=references, feature_path=features)
         print(f"Matching extracted features...")    # Creates matches.h5
         match_features.main(matcher_conf, sfm_pairs, features=features, matches=matches)
+        # 2. Generate 3D reconstruction
+        recon = reconstruct(sfm_dir, image_dir, sfm_pairs, features, matches, image_list=references)
     else:
         print(f"Resuming from existing pairs-sfm.txt...")
         sfm_new_pairs = output_path / 'pairs-sfm_new.txt'
         generate_pairs.generate_new_pairs(sfm_pairs, sfm_new_pairs, image_list=references, ref_list=references)
-        print(f"Extracting Features for images...") # Creates features.h5
+        append_new_pairs(sfm_pairs, sfm_new_pairs)
+        print(f"Extracting Features for new images...") # Creates features.h5
         extract_features.main(feature_conf, image_dir, image_list=references, feature_path=features)
+        print(f"Matching extracted features...")    # Creates matches.h5
+        match_features.main(matcher_conf, sfm_new_pairs, features=features, matches=matches, overwrite=True)
+        # 2. Generate 3D reconstruction
+        recon = update_reconstruction(sfm_dir, image_dir, sfm_new_pairs, features, matches, image_list=references)
 
-    # 2. Generate 3D reconstruction
-    recon = reconstruct(sfm_dir, image_dir, sfm_pairs, features, matches, image_list=references)
 
     # De-register image: removes points associated with the image(?)
     print(f"De-registering an image...")
