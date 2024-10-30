@@ -12,11 +12,11 @@ from third_party.Hierarchical_Localization.hloc import extract_features, match_f
 from third_party.Hierarchical_Localization.hloc.visualization import plot_images, read_image
 from third_party.Hierarchical_Localization.hloc.utils import viz_3d
 from third_party.Hierarchical_Localization.hloc.utils.database import COLMAPDatabase
-from third_party.Hierarchical_Localization.hloc.reconstruction import create_empty_db, import_images, get_image_ids
+from third_party.Hierarchical_Localization.hloc.reconstruction import create_empty_db, import_images, get_image_ids, run_reconstruction
 from . import myreconstruction
 from third_party.Hierarchical_Localization.hloc.triangulation import OutputCapture, import_features, import_matches, estimation_and_geometric_verification, parse_option_args
 from . import generate_pairs
-from third_party.colmap.pycolmap.examples import custom_incremental_mapping
+from third_party.colmap_310.pycolmap import custom_incremental_mapping
 
 
 def delete_directory_if_exists(directory_path):
@@ -25,51 +25,6 @@ def delete_directory_if_exists(directory_path):
         print(f"Deleted directory: {directory_path}")
     else:
         print(f"Directory does not exist: {directory_path}")
-
-
-def run_reconstruction(
-    sfm_dir: Path,
-    database_path: Path,
-    image_dir: Path,
-    verbose: bool = False,
-    options: Optional[Dict[str, Any]] = None,
-) -> pycolmap.Reconstruction:
-    models_path = sfm_dir / "models"
-    models_path.mkdir(exist_ok=True, parents=True)
-    guru.info("Running 3D reconstruction...")
-    if options is None:
-        options = {}
-    options = {"num_threads": min(multiprocessing.cpu_count(), 16), **options}
-    with OutputCapture(verbose):
-        with pycolmap.ostream():
-            reconstructions = pycolmap.incremental_mapping(
-                database_path, image_dir, models_path, options=options
-            )
-
-    if len(reconstructions) == 0:
-        guru.error("Could not reconstruct any model!")
-        return None
-    guru.info(f"Reconstructed {len(reconstructions)} model(s).")
-
-    largest_index = None
-    largest_num_images = 0
-    for index, rec in reconstructions.items():
-        num_images = rec.num_reg_images()
-        if num_images > largest_num_images:
-            largest_index = index
-            largest_num_images = num_images
-    assert largest_index is not None
-    guru.info(
-        f"Largest model is #{largest_index} with {largest_num_images} images."
-    )
-
-    for filename in ["images.bin", "cameras.bin", "points3D.bin"]:
-        if (sfm_dir / filename).exists():
-            (sfm_dir / filename).unlink()
-        shutil.move(
-            str(models_path / str(largest_index) / filename), str(sfm_dir))
-    return reconstructions[largest_index]
-
 
 def reconstruct(
     sfm_dir: Path,
@@ -106,9 +61,7 @@ def reconstruct(
     )
     if not skip_geometric_verification:
         estimation_and_geometric_verification(database, pairs, verbose)
-    reconstruction = run_reconstruction(
-        sfm_dir, database, image_dir, verbose, mapper_options
-    )
+    reconstruction = custom_incremental_mapping.main(database, image_dir, sfm_dir)[0]
     if reconstruction is not None:
         guru.info(
             f"Reconstruction statistics:\n{reconstruction.summary()}"
@@ -116,9 +69,9 @@ def reconstruct(
         )
     return reconstruction
 
-
-def update_reconstruction(
+def update_database(
     sfm_dir: Path,
+    new_sfm_dir: Path,
     image_dir: Path,
     pairs: Path,
     features: Path,
@@ -129,33 +82,75 @@ def update_reconstruction(
     min_match_score: Optional[float] = None,
     image_list: Optional[List[str]] = None,
     image_options: Optional[Dict[str, Any]] = None,
-    mapper_options: Optional[Dict[str, Any]] = None,
-) -> pycolmap.Reconstruction:
-    assert features.exists(), features
-    assert pairs.exists(), pairs
-    assert matches.exists(), matches
-
-    sfm_dir.mkdir(parents=True, exist_ok=True)
-    database = sfm_dir / "database.db"
+):
+    new_sfm_dir.mkdir(parents=True, exist_ok=True)
+    old_database = sfm_dir / "database.db"
+    new_database = new_sfm_dir / "database.db"
+    shutil.copy(old_database, new_database)
 
     myreconstruction.import_new_images(
-        image_dir, database, camera_mode, image_list, image_options)
-    image_ids = get_image_ids(database)
+        image_dir, new_database, camera_mode, image_list, image_options)
+    image_ids = get_image_ids(new_database)
     myreconstruction.import_new_features(
-        image_dir, image_ids, database, features)
+        image_dir, image_ids, new_database, features)
     import_matches(
         image_ids,
-        database,
+        new_database,
         pairs,
         matches,
         min_match_score,
         skip_geometric_verification,
     )
     if not skip_geometric_verification:
-        estimation_and_geometric_verification(database, pairs, verbose)
+        estimation_and_geometric_verification(new_database, pairs, verbose)
 
-    recs = custom_incremental_mapping.main(
-        database, image_dir, sfm_dir, None, sfm_dir)
+def update_reconstruction(
+    sfm_dir: Path,
+    image_dir: Path,
+    pairs: Path,
+    features: Path,
+    matches: Path,
+    mapper_options: Optional[Dict[str, Any]] = None,
+) -> pycolmap.Reconstruction:
+    assert features.exists(), features
+    assert pairs.exists(), pairs
+    assert matches.exists(), matches
+    
+    print("Starting CUSTOM incremental mapping from existing database/reconstruction...")
+    # TODO These should be moved to a different file for better readability
+    options = None
+    if options is None:
+        options = pycolmap.IncrementalPipelineOptions()
+
+    reconstruction_manager = pycolmap.ReconstructionManager()
+    input_path = sfm_dir
+    if input_path is not None and input_path != "":
+        reconstruction_manager.read(input_path)
+
+    controller = pycolmap.IncrementalMapperController(
+        options, image_dir, database, reconstruction_manager
+    )  # new database
+    options = controller.options
+    reconstruction_manager = controller.reconstruction_manager
+    # TODO: Find out what database cache is
+    # Depending on the database cache, create our own cache and pass it to the mapper
+    database_cache = controller.database_cache
+    print(f"{database_cache=}")
+    mapper = pycolmap.IncrementalMapper(database_cache)  # old database
+    initial_reconstruction_given = reconstruction_manager.size() > 0
+    if reconstruction_manager.size() > 1:
+        guru.fatal( "Can only resume from a single reconstruction, but multiple are given")
+    
+    for num_trials in range(options.init_num_trials):
+        if (not initial_reconstruction_given) or num_trials > 0:
+            raise NotImplementedError("Must provide initial reconstruction when resuming")
+        else:
+            reconstruction_idx = 0
+        reconstruction = reconstruction_manager.get(reconstruction_idx)
+        status = custom_incremental_mapping.reconstruct_sub_model(controller, mapper, mapper_options, reconstruction_manager.get(reconstruction_idx))
+
+    # recs = custom_incremental_mapping.main(
+    #     database, image_dir, sfm_dir, options=None, input_path=sfm_dir)
     # reconstruction = run_reconstruction(
     #     sfm_dir, database, image_dir, verbose, mapper_options
     # )
@@ -187,11 +182,43 @@ def append_new_pairs(sfm_pairs_path, sfm_new_pairs_path):
     with sfm_pairs.open('w') as f:
         f.writelines(sfm_pairs_content)
 
+def on_key_event():
+    print("Adding one image extra...")
+    
+    # 移動元と移動先のディレクトリ
+    src_dir = "temp/images"
+    dest_dir = "temp/images/sacre_coeur"
 
-def main(
-        scene_name: str = 'sacre_coeur',
-        resume: bool = False,
-):
+    # 移動元ディレクトリ内の.jpgファイルを検索
+    for file_name in os.listdir(src_dir):
+        if file_name.endswith(".jpg"):
+            src_file = os.path.join(src_dir, file_name)
+            dest_file = os.path.join(dest_dir, file_name)
+            shutil.move(src_file, dest_file)
+            print(f"Moved {src_file} to {dest_file}")
+            return True
+
+def reset_files():
+    dest_dir = Path("temp/images")
+    sfm_dir = Path("temp/images/sacre_coeur")
+
+    # dest_dir内のファイルを取得し、ソートして一番最後のファイルを特定
+    files = sorted(sfm_dir.iterdir(), key=lambda x: x.name)
+    if not files:
+        print("No files found in dest_dir.")
+        return
+
+    last_file = files[-1]
+
+    # 移動先のパスを定義
+    destination_file = dest_dir / last_file.name
+
+    # ファイルを移動
+    shutil.move(last_file, destination_file)
+
+    print(f"Moved {last_file} to {destination_file}")
+
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('scene_name', type=str, nargs='?',
                         default='sacre_coeur', help='Name of the scene')
@@ -234,7 +261,24 @@ def main(
         # 2. Generate 3D reconstruction
         recon = reconstruct(sfm_dir, image_dir, sfm_pairs,
                             features, matches, image_list=references)
-    else:
+    
+    while True:
+        print(f"Press 'r' to add one more image...")
+        key = input().strip().lower()
+        if key == 'r':
+            resume = on_key_event()
+            if resume:
+                print(f"Resuming from existing pairs-sfm.txt...")
+                break
+        else:
+            print("Invalid key. Please press 'r' to add one more image.")
+
+    if resume:
+         # 1. Feature extraction and matching
+        references = sorted([str(p.relative_to(image_dir))
+                            for p in image_dir.iterdir()])
+        print(f"References: {references}")
+        
         print(f"Resuming from existing pairs-sfm.txt...")
         sfm_new_pairs = output_path / 'pairs-sfm_new.txt'
         generate_pairs.generate_new_pairs(
@@ -246,9 +290,21 @@ def main(
         print(f"Matching extracted features...")    # Creates matches.h5
         match_features.main(matcher_conf, sfm_new_pairs,
                             features=features, matches=matches, overwrite=True)
+        
+        new_sfm_dir = output_path / 'sfm_new'
+        update_database(sfm_dir, new_sfm_dir, image_dir, sfm_new_pairs, features, matches, image_list=references)
         # 2. Generate 3D reconstruction
-        recon = update_reconstruction(
-            sfm_dir, image_dir, sfm_new_pairs, features, matches, image_list=references)
+        # recon = update_reconstruction(
+        #     sfm_dir, image_dir, sfm_new_pairs, features, matches, image_list=references)
+
+        new_database_path = new_sfm_dir / "database.db"
+        model_path = sfm_dir / "0"
+        recon = custom_incremental_mapping.main(new_database_path, image_dir, new_sfm_dir, input_path = model_path)[0]
+        if recon is not None:
+            guru.info(
+                f"Reconstruction statistics:\n{recon.summary()}"
+            )
+        reset_files()
 
     # # De-register image: removes points associated with the image(?)
     # print(f"De-registering an image...")
@@ -262,6 +318,7 @@ def main(
     # print(recon.summary())
 
     """
+    # 3. Visualization
     fig = viz_3d.init_figure()
     viz_3d.plot_reconstruction(
         fig, model, color='rgba(255,0,0,0.5)', name="mapping", points_rgb=True)
