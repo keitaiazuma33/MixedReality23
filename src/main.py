@@ -122,9 +122,8 @@ def overwrite_database(
 ):
     database = sfm_dir / "database.db"
 
-    db_editor.import_new_images(
-        image_dir, database, camera_mode, image_list, image_options)
-    image_ids = get_image_ids(database)
+    db_editor.import_new_images(image_dir, database, camera_mode, image_list, image_options)
+    image_ids = get_image_ids(database)  # returns a map of image name to image id
     db_editor.import_new_features(
         image_dir, image_ids, database, features)
     import_matches(
@@ -214,7 +213,7 @@ def reset_files():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('scene_name', type=str, nargs='?',
+    parser.add_argument('--scene_name', type=str, nargs='?',
                         default='sacre_coeur', help='Name of the scene')
     parser.add_argument('--resume', action='store_true',
                         help='Flag to indicate if the process should resume')
@@ -258,22 +257,37 @@ def main():
         recon = init_reconstruction(sfm_dir, image_dir, sfm_pairs, features, matches, image_list=references)
 
         reconstruction_manager, mapper = instantiate_reconstruction_manager(database_path, image_dir, model_path)
+        ply_file_path = f'/local/home/kazuma/Desktop/MixedReality23/temp/myoutput/{args.scene_name}'
+        export_iter = 0
     
     while True:
-        print(f"Press 'r' to add one more image...")
+        print(f"Press 'r' to add one more image or 'e' to export PLY file and text.")
         key = input().strip().lower()
         if key == 'r':
             resume = on_key_event()
             if resume:
                 print(f"Resuming from existing pairs-sfm.txt...")
                 break
+        elif key == 'e':
+            guru.info("Exporting PLY file and text")
+            assert(reconstruction_manager.size() <= 1)
+            current_recon = reconstruction_manager.get(0)
+            ply_file_dir = f"{ply_file_path}/iter{export_iter}"
+            os.makedirs(ply_file_dir, exist_ok=True)
+            current_recon.export_PLY(f"{ply_file_dir}/reconstruction.ply")
+            current_recon.write_text(ply_file_dir)
+            export_iter += 1
+        elif key == 'd':
+            mvs_path = Path(f'{ply_file_path}/mvs')
+            pycolmap.undistort_images(mvs_path, f"{output_path}/sfm/0", image_dir)
+            pycolmap.patch_match_stereo(mvs_path)  # requires compilation with CUDA
+            pycolmap.stereo_fusion(mvs_path / "dense.ply", mvs_path)
         else:
-            print("Invalid key. Please press 'r' to add one more image.")
+            print("Invalid key. Please press 'r' to add one more image or 'e' to export PLY file and text.")
 
     if resume:
          # 1. Feature extraction and matching
-        references = sorted([str(p.relative_to(image_dir))
-                            for p in image_dir.iterdir()])
+        references = sorted([str(p.relative_to(image_dir)) for p in image_dir.iterdir()])
         print(f"References: {references}")
         
         print(f"Resuming from existing pairs-sfm.txt...")
