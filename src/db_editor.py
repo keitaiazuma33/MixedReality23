@@ -22,7 +22,7 @@ def import_new_images(
     guru.info("Importing new image into the database...")
     if options is None:
         options = {}
-    images = list(image_dir.iterdir())
+    images = sorted(list(image_dir.iterdir()))
     if len(images) == 0:
         raise IOError(f"No images found in {image_dir}.")
     
@@ -54,7 +54,7 @@ def import_new_features(
     guru.info("Importing new features into the database...")
     db = COLMAPDatabase.connect(database_path)
 
-    images = list(image_dir.iterdir())
+    images = sorted(list(image_dir.iterdir()))
     if len(images) == 0:
         raise IOError(f"No images found in {image_dir}.")
     

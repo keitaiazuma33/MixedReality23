@@ -215,17 +215,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--scene_name', type=str, nargs='?',
                         default='sacre_coeur', help='Name of the scene')
-    parser.add_argument('--resume', action='store_true',
-                        help='Flag to indicate if the process should resume')
     args = parser.parse_args()
 
     scene_name = args.scene_name
-    resume = args.resume
 
     image_dir = Path(f'temp/images/{scene_name}')
     output_path = Path(f'temp/outputs/{scene_name}')
-    if not resume:
-        delete_directory_if_exists(output_path)
+    delete_directory_if_exists(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
 
     sfm_pairs = output_path / 'pairs-sfm.txt'
@@ -244,31 +240,105 @@ def main():
                         for p in image_dir.iterdir()])
     print(f"References: {references}")
 
-    if not resume:
-        print(f"Generating Exhaustive pairs...")    # Creates pairs-sfm.txt
-        pairs_from_exhaustive.main(sfm_pairs, image_list=references)
-        print(f"Extracting Features for images...")  # Creates features.h5
-        extract_features.main(feature_conf, image_dir,
-                              image_list=references, feature_path=features)
-        print(f"Matching extracted features...")    # Creates matches.h5
-        match_features.main(matcher_conf, sfm_pairs,
-                            features=features, matches=matches)
-        # 2. Generate 3D reconstruction
-        recon = init_reconstruction(sfm_dir, image_dir, sfm_pairs, features, matches, image_list=references)
+    print(f"Generating Exhaustive pairs...")    # Creates pairs-sfm.txt
+    pairs_from_exhaustive.main(sfm_pairs, image_list=references)
+    print(f"Extracting Features for images...")  # Creates features.h5
+    extract_features.main(feature_conf, image_dir,
+                            image_list=references, feature_path=features)
+    print(f"Matching extracted features...")    # Creates matches.h5
+    match_features.main(matcher_conf, sfm_pairs,
+                        features=features, matches=matches)
+    # 2. Generate 3D reconstruction
+    recon = init_reconstruction(sfm_dir, image_dir, sfm_pairs, features, matches, image_list=references)
 
-        reconstruction_manager, mapper = instantiate_reconstruction_manager(database_path, image_dir, model_path)
-        ply_file_path = f'/local/home/kazuma/Desktop/MixedReality23/temp/myoutput/{args.scene_name}'
-        export_iter = 0
+    reconstruction_manager, mapper = instantiate_reconstruction_manager(database_path, image_dir, model_path)
+    ply_file_path = f'/local/home/kazuma/Desktop/MixedReality23/temp/myoutput/{args.scene_name}'
+    export_iter = 0
+    de_reg_images = []
     
     while True:
-        print(f"Press 'r' to add one more image or 'e' to export PLY file and text.")
-        key = input().strip().lower()
-        if key == 'r':
-            resume = on_key_event()
-            if resume:
-                print(f"Resuming from existing pairs-sfm.txt...")
-                break
-        elif key == 'e':
+        print(f"Please press 'n', 'r', 'a', 'e', 'd', 'q', or 'h' for help.")
+        key = input().strip().split()
+        if key[0] == 'n':
+            print("\n" + "="*30)
+            print("ADDING ONE NEW IMAGE...")
+            print("="*30 + "\n")
+
+            print(f"Resuming from existing pairs-sfm.txt...")
+            # 1. Feature extraction and matching
+            references = sorted([str(p.relative_to(image_dir)) for p in image_dir.iterdir()])
+            print(f"References: {references}")
+            
+            print(f"Resuming from existing pairs-sfm.txt...")
+            sfm_new_pairs = output_path / 'pairs-sfm_new.txt'
+            generate_pairs.generate_new_pairs(
+                sfm_pairs, sfm_new_pairs, image_list=references, ref_list=references)
+            append_new_pairs(sfm_pairs, sfm_new_pairs)
+            print(f"Extracting Features for new images...")  # Creates features.h5
+            extract_features.main(feature_conf, image_dir,
+                                image_list=references, feature_path=features)
+            print(f"Matching extracted features...")    # Creates matches.h5
+            match_features.main(matcher_conf, sfm_new_pairs,
+                                features=features, matches=matches, overwrite=True)
+            
+            new_sfm_dir = output_path / 'sfm_new'
+            #update_database(sfm_dir, new_sfm_dir, image_dir, sfm_new_pairs, features, matches, image_list=references)
+            overwrite_database(sfm_dir, image_dir, sfm_new_pairs, features, matches, image_list=references)
+            # 2. Generate 3D reconstruction
+            # recon = update_reconstruction(
+            #     sfm_dir, image_dir, sfm_new_pairs, features, matches, image_list=references)
+
+            new_database_path = new_sfm_dir / "database.db"
+            model_path = sfm_dir / "0"
+            recon = my_reconstruction.main(database_path, sfm_dir, reconstruction_manager, mapper)[0]
+            if recon is not None:
+                guru.info(
+                    f"Reconstruction statistics:\n{recon.summary()}"
+                )
+        elif key[0] == 'r':
+            print("\n" + "="*30)
+            print("REMOVING SPECIFIED IMAGES...")
+            print("="*30 + "\n")
+            # De-register image: removes points associated with the image
+            image_names = key[1:]
+            image_ids = get_image_ids(database_path)
+            to_de_reg_image_ids = [image_ids[name] for name in image_names]
+            assert (all(image_id not in de_reg_images for image_id in to_de_reg_image_ids))
+
+            print(f"De-registering images (image_ids = {to_de_reg_image_ids})...")
+            recon = reconstruction_manager.get(0)
+            for image_id in to_de_reg_image_ids:
+                assert (image_id not in de_reg_images)
+                recon.deregister_image(image_id)
+                de_reg_images.append(image_id)
+            print(f"{recon.reg_image_ids()=}")
+            print(recon.summary())
+        elif key[0] == 'a':
+            print("\n" + "="*30)
+            print("ADDING BACK SPECIFIED IMAGES...")
+            print("="*30 + "\n")
+            # Re-register image and more
+            print(f"Re-registering an image...")
+            image_names = key[1:]
+            image_ids = get_image_ids(database_path)
+            to_reg_image_ids = [image_ids[name] for name in image_names]
+            assert (all(image_id in de_reg_images for image_id in to_reg_image_ids))
+
+            guru.debug(f"BEFORE ADDING: {de_reg_images=}")
+            de_reg_images = [element for element in de_reg_images if element not in to_reg_image_ids]
+            guru.debug(f"AFTER ADDING: {de_reg_images=}")
+            recon = my_reconstruction.main(database_path, sfm_dir, reconstruction_manager, mapper, image_to_register=to_reg_image_ids)[0]
+
+            if recon is not None:
+                guru.info(
+                    f"Reconstruction statistics:\n{recon.summary()}"
+                )
+            print(recon.summary())
+        elif key[0] == 'e':
+            print("\n" + "="*30)
+            print("EXPORTING...")
+            print("="*30 + "\n")
+
             guru.info("Exporting PLY file and text")
             assert(reconstruction_manager.size() <= 1)
             current_recon = reconstruction_manager.get(0)
@@ -277,66 +347,31 @@ def main():
             current_recon.export_PLY(f"{ply_file_dir}/reconstruction.ply")
             current_recon.write_text(ply_file_dir)
             export_iter += 1
-        elif key == 'd':
+        elif key[0] == 'd':
+            print("\n" + "="*30)
+            print("DENSE RECONSTRUCTION...")
+            print("="*30 + "\n")
+
             mvs_path = Path(f'{ply_file_path}/mvs')
             pycolmap.undistort_images(mvs_path, f"{output_path}/sfm/0", image_dir)
             pycolmap.patch_match_stereo(mvs_path)  # requires compilation with CUDA
             pycolmap.stereo_fusion(mvs_path / "dense.ply", mvs_path)
+        elif key[0] == 'q':
+            print("Quitting...")
+            break
+        elif key[0] == 'h':
+            print("\n" + "="*30)
+            print("HELP")
+            print("="*30 + "\n")
+            print("Press 'n' after adding one new image.\n")
+            print("Enter 'r [...]' to remove specified images.\n")
+            print("Enter 'a [...]' to add back specified images.\n")
+            print("Press 'e' to export PLY file and text.\n")
+            print("Press 'd' to perform dense reconstruction.\n")
+            print("Press 'q' to quit.\n")
         else:
-            print("Invalid key. Please press 'r' to add one more image or 'e' to export PLY file and text.")
-
-    if resume:
-         # 1. Feature extraction and matching
-        references = sorted([str(p.relative_to(image_dir)) for p in image_dir.iterdir()])
-        print(f"References: {references}")
-        
-        print(f"Resuming from existing pairs-sfm.txt...")
-        sfm_new_pairs = output_path / 'pairs-sfm_new.txt'
-        generate_pairs.generate_new_pairs(
-            sfm_pairs, sfm_new_pairs, image_list=references, ref_list=references)
-        append_new_pairs(sfm_pairs, sfm_new_pairs)
-        print(f"Extracting Features for new images...")  # Creates features.h5
-        extract_features.main(feature_conf, image_dir,
-                              image_list=references, feature_path=features)
-        print(f"Matching extracted features...")    # Creates matches.h5
-        match_features.main(matcher_conf, sfm_new_pairs,
-                            features=features, matches=matches, overwrite=True)
-        
-        new_sfm_dir = output_path / 'sfm_new'
-        #update_database(sfm_dir, new_sfm_dir, image_dir, sfm_new_pairs, features, matches, image_list=references)
-        overwrite_database(sfm_dir, image_dir, sfm_new_pairs, features, matches, image_list=references)
-        # 2. Generate 3D reconstruction
-        # recon = update_reconstruction(
-        #     sfm_dir, image_dir, sfm_new_pairs, features, matches, image_list=references)
-
-        new_database_path = new_sfm_dir / "database.db"
-        model_path = sfm_dir / "0"
-        recon = my_reconstruction.main(database_path, sfm_dir, reconstruction_manager, mapper)[0]
-        if recon is not None:
-            guru.info(
-                f"Reconstruction statistics:\n{recon.summary()}"
-            )
-        reset_files()
-
-    # De-register image: removes points associated with the image(?)
-    de_reg_images = []
-
-    print(f"De-registering an image (image_id = {recon.reg_image_ids()[-1]})...")
-    image_ids = recon.reg_image_ids()
-    for i in range(1,4):
-        recon.deregister_image(image_ids[i])
-        de_reg_images.append(image_ids[i])
-    print(recon.summary())
+            print("Invalid key. Please press 'h' for help.\n")
     
-    recon = my_reconstruction.main(database_path, sfm_dir, reconstruction_manager, mapper, image_to_register=de_reg_images[0:2])[0]
-    if recon is not None:
-        guru.info(
-            f"Reconstruction statistics:\n{recon.summary()}"
-        )
-    # # Re-register image: does NOT recompute the points associated with the image
-    # print(f"Re-registering an image...")
-    # recon.register_image(image_ids[0])
-    # print(recon.summary())
 
     """
     # 3. Visualization
