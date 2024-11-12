@@ -17,7 +17,7 @@ from third_party.Hierarchical_Localization.hloc.reconstruction import create_emp
 from . import db_editor
 from . import my_reconstruction
 from third_party.Hierarchical_Localization.hloc.triangulation import OutputCapture, import_features, import_matches, estimation_and_geometric_verification, parse_option_args
-from . import generate_pairs
+from .generate_pairs import generate_new_pairs
 from third_party.colmap_310.pycolmap import custom_incremental_mapping
 
 
@@ -29,7 +29,7 @@ def delete_directory_if_exists(directory_path):
         print(f"Directory does not exist: {directory_path}")
 
 def init_reconstruction(
-    sfm_dir: Path,
+    recon_dir: Path,
     image_dir: Path,
     pairs: Path,
     features: Path,
@@ -42,12 +42,33 @@ def init_reconstruction(
     image_options: Optional[Dict[str, Any]] = None,
     mapper_options: Optional[Dict[str, Any]] = None,
 ) -> pycolmap.Reconstruction:
+    """
+    Initializes a pycolmap.Reconstruction object sing hloc functions to create a database,
+    import features and matches, and then run the custom incremental mapper from hloc.
+
+    Parameters:
+    - recon_dir (Path): Directory to store the reconstruction results.
+    - image_dir (Path): Directory containing the input images.
+    - pairs (Path): Path to the file containing image pairs.
+    - features (Path): Path to the file containing extracted features.
+    - matches (Path): Path to the file containing feature matches.
+    - camera_mode (pycolmap.CameraMode): Camera mode for importing images.
+    - verbose (bool): If True, enables verbose output.
+    - skip_geometric_verification (bool): If True, skips geometric verification of matches.
+    - min_match_score (Optional[float]): Minimum match score to consider.
+    - image_list (Optional[List[str]]): List of images to include in the reconstruction.
+    - image_options (Optional[Dict[str, Any]]): Additional options for image import.
+    - mapper_options (Optional[Dict[str, Any]]): Additional options for the mapper.
+
+    Returns:
+    - pycolmap.Reconstruction: The resulting reconstruction object.
+    """
     assert features.exists(), features
     assert pairs.exists(), pairs
     assert matches.exists(), matches
 
-    sfm_dir.mkdir(parents=True, exist_ok=True)
-    database = sfm_dir / "database.db"
+    recon_dir.mkdir(parents=True, exist_ok=True)
+    database = recon_dir / "database.db"
 
     create_empty_db(database)
     import_images(image_dir, database, camera_mode, image_list, image_options)
@@ -64,7 +85,7 @@ def init_reconstruction(
     if not skip_geometric_verification:
         estimation_and_geometric_verification(database, pairs, verbose)
 
-    reconstruction = custom_incremental_mapping.main(database, image_dir, sfm_dir)[0]
+    reconstruction = custom_incremental_mapping.main(database, image_dir, recon_dir)[0]
     if reconstruction is not None:
         guru.info(
             f"Reconstruction statistics:\n{reconstruction.summary()}"
@@ -108,9 +129,10 @@ def update_database(
         estimation_and_geometric_verification(new_database, pairs, verbose)
 
 def overwrite_database(
-    sfm_dir: Path,
     image_dir: Path,
-    pairs: Path,
+    recon_dir: Path,
+    new_images: List[str],
+    new_pairs_file: Path,
     features: Path,
     matches: Path,
     camera_mode: pycolmap.CameraMode = pycolmap.CameraMode.AUTO,
@@ -120,22 +142,21 @@ def overwrite_database(
     image_list: Optional[List[str]] = None,
     image_options: Optional[Dict[str, Any]] = None,
 ):
-    database = sfm_dir / "database.db"
+    database = recon_dir / "database.db"
 
-    db_editor.import_new_images(image_dir, database, camera_mode, image_list, image_options)
+    db_editor.import_new_images(image_dir, new_images, database, camera_mode, image_list, image_options)
     image_ids = get_image_ids(database)  # returns a map of image name to image id
-    db_editor.import_new_features(
-        image_dir, image_ids, database, features)
+    db_editor.import_new_features(new_images, image_ids, database, features)
     import_matches(
         image_ids,
         database,
-        pairs,
+        new_pairs_file,
         matches,
         min_match_score,
         skip_geometric_verification,
     )
     if not skip_geometric_verification:
-        estimation_and_geometric_verification(database, pairs, verbose)
+        estimation_and_geometric_verification(database, new_pairs_file, verbose)
 
 def append_new_pairs(sfm_pairs_path, sfm_new_pairs_path):
     # ファイルパスをPathオブジェクトに変換
@@ -213,11 +234,14 @@ def reset_files():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--scene_name', type=str, nargs='?',
-                        default='sacre_coeur', help='Name of the scene')
+    parser.add_argument('--scene_name', type=str, nargs='?', default='test', help='Name of the scene')
+    parser.add_argument('--feature_extractor', type=str, nargs='?', default='superpoint_aachen', help=f'Name of feature extractor. Choose from {list(extract_features.confs.keys())}')
+    parser.add_argument('--feature_matcher', type=str, nargs='?', default='superpoint+lightglue', help=f'Name of feature matcher. Choose from {list(match_features.confs.keys())}')
     args = parser.parse_args()
 
     scene_name = args.scene_name
+    feature_extractor = args.feature_extractor
+    feature_matcher = args.feature_matcher
 
     image_dir = Path(f'temp/images/{scene_name}')
     output_path = Path(f'temp/outputs/{scene_name}')
@@ -226,33 +250,31 @@ def main():
 
     sfm_pairs = output_path / 'pairs-sfm.txt'
     loc_pairs = output_path / 'pairs-loc.txt'
-    sfm_dir = output_path / 'sfm'
-    features = output_path / 'features.h5'
-    matches = output_path / 'matches.h5'
-    model_path = sfm_dir / "0"
-    database_path = sfm_dir / "database.db"
+    recon_dir = output_path / 'reconstruction'
+    features_file = output_path / 'features.h5'
+    matches_file = output_path / 'matches.h5'
+    model_path = recon_dir / "0"
+    database_path = recon_dir / "database.db"
 
-    feature_conf = extract_features.confs['superpoint_aachen']
-    matcher_conf = match_features.confs['superpoint+lightglue']
+    feature_conf = extract_features.confs[feature_extractor]
+    matcher_conf = match_features.confs[feature_matcher]
 
     # 1. Feature extraction and matching
-    references = sorted([str(p.relative_to(image_dir))
-                        for p in image_dir.iterdir()])
+    references = sorted([str(p.relative_to(image_dir)) for p in image_dir.iterdir()])
+    processed_images = set(references)
     print(f"References: {references}")
 
     print(f"Generating Exhaustive pairs...")    # Creates pairs-sfm.txt
     pairs_from_exhaustive.main(sfm_pairs, image_list=references)
-    print(f"Extracting Features for images...")  # Creates features.h5
-    extract_features.main(feature_conf, image_dir,
-                            image_list=references, feature_path=features)
+    print(f"Extracting Features for images...") # Creates features.h5
+    extract_features.main(feature_conf, image_dir, image_list=references, feature_path=features_file)
     print(f"Matching extracted features...")    # Creates matches.h5
-    match_features.main(matcher_conf, sfm_pairs,
-                        features=features, matches=matches)
+    match_features.main(matcher_conf, sfm_pairs, features=features_file, matches=matches_file)
+    
     # 2. Generate 3D reconstruction
-    recon = init_reconstruction(sfm_dir, image_dir, sfm_pairs, features, matches, image_list=references)
+    recon = init_reconstruction(recon_dir, image_dir, sfm_pairs, features_file, matches_file, image_list=references)
 
     reconstruction_manager, mapper = instantiate_reconstruction_manager(database_path, image_dir, model_path)
-    ply_file_path = f'/local/home/kazuma/Desktop/MixedReality23/temp/myoutput/{args.scene_name}'
     export_iter = 0
     de_reg_images = []
     
@@ -261,40 +283,36 @@ def main():
         key = input().strip().split()
         if key[0] == 'n':
             print("\n" + "="*30)
-            print("ADDING ONE NEW IMAGE...")
+            print("ADDING NEW IMAGES...")
             print("="*30 + "\n")
 
             print(f"Resuming from existing pairs-sfm.txt...")
             # 1. Feature extraction and matching
             references = sorted([str(p.relative_to(image_dir)) for p in image_dir.iterdir()])
-            print(f"References: {references}")
+            new_images = [img for img in references if img not in processed_images]
             
             print(f"Resuming from existing pairs-sfm.txt...")
             sfm_new_pairs = output_path / 'pairs-sfm_new.txt'
-            generate_pairs.generate_new_pairs(
-                sfm_pairs, sfm_new_pairs, image_list=references, ref_list=references)
+            generate_new_pairs(sfm_pairs, sfm_new_pairs, new_image_list=new_images, ref_list=references)
             append_new_pairs(sfm_pairs, sfm_new_pairs)
             print(f"Extracting Features for new images...")  # Creates features.h5
-            extract_features.main(feature_conf, image_dir,
-                                image_list=references, feature_path=features)
+            extract_features.main(feature_conf, image_dir, image_list=references, feature_path=features_file)
             print(f"Matching extracted features...")    # Creates matches.h5
-            match_features.main(matcher_conf, sfm_new_pairs,
-                                features=features, matches=matches, overwrite=True)
+            match_features.main(matcher_conf, sfm_new_pairs, features=features_file, matches=matches_file, overwrite=True)
             
-            new_sfm_dir = output_path / 'sfm_new'
-            #update_database(sfm_dir, new_sfm_dir, image_dir, sfm_new_pairs, features, matches, image_list=references)
-            overwrite_database(sfm_dir, image_dir, sfm_new_pairs, features, matches, image_list=references)
+            #update_database(recon_dir, new_recon_dir, image_dir, sfm_new_pairs, features, matches, image_list=references)
+            overwrite_database(image_dir, recon_dir, new_images, sfm_new_pairs, features_file, matches_file, image_list=references)
             # 2. Generate 3D reconstruction
             # recon = update_reconstruction(
-            #     sfm_dir, image_dir, sfm_new_pairs, features, matches, image_list=references)
+            #     recon_dir, image_dir, sfm_new_pairs, features, matches, image_list=references)
 
-            new_database_path = new_sfm_dir / "database.db"
-            model_path = sfm_dir / "0"
-            recon = my_reconstruction.main(database_path, sfm_dir, reconstruction_manager, mapper)[0]
+            model_path = recon_dir / "0"
+            recon = my_reconstruction.main(database_path, recon_dir, reconstruction_manager, mapper)[0]
             if recon is not None:
                 guru.info(
                     f"Reconstruction statistics:\n{recon.summary()}"
                 )
+            processed_images.update(new_images)
         elif key[0] == 'r':
             print("\n" + "="*30)
             print("REMOVING SPECIFIED IMAGES...")
@@ -324,10 +342,8 @@ def main():
             to_reg_image_ids = [image_ids[name] for name in image_names]
             assert (all(image_id in de_reg_images for image_id in to_reg_image_ids))
 
-            guru.debug(f"BEFORE ADDING: {de_reg_images=}")
             de_reg_images = [element for element in de_reg_images if element not in to_reg_image_ids]
-            guru.debug(f"AFTER ADDING: {de_reg_images=}")
-            recon = my_reconstruction.main(database_path, sfm_dir, reconstruction_manager, mapper, image_to_register=to_reg_image_ids)[0]
+            recon = my_reconstruction.main(database_path, recon_dir, reconstruction_manager, mapper, image_to_register=to_reg_image_ids)[0]
 
             if recon is not None:
                 guru.info(
@@ -342,7 +358,7 @@ def main():
             guru.info("Exporting PLY file and text")
             assert(reconstruction_manager.size() <= 1)
             current_recon = reconstruction_manager.get(0)
-            ply_file_dir = f"{ply_file_path}/iter{export_iter}"
+            ply_file_dir = f"{output_path}/iter{export_iter}"
             os.makedirs(ply_file_dir, exist_ok=True)
             current_recon.export_PLY(f"{ply_file_dir}/reconstruction.ply")
             current_recon.write_text(ply_file_dir)
@@ -352,7 +368,7 @@ def main():
             print("DENSE RECONSTRUCTION...")
             print("="*30 + "\n")
 
-            mvs_path = Path(f'{ply_file_path}/mvs')
+            mvs_path = Path(f'{output_path}/mvs')
             pycolmap.undistort_images(mvs_path, f"{output_path}/sfm/0", image_dir)
             pycolmap.patch_match_stereo(mvs_path)  # requires compilation with CUDA
             pycolmap.stereo_fusion(mvs_path / "dense.ply", mvs_path)
