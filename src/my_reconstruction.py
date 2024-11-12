@@ -9,11 +9,20 @@ import zipfile
 from pathlib import Path
 
 import enlighten
+from loguru import logger as guru
 
 import pycolmap
 from pycolmap import logging
 from third_party.colmap_310.pycolmap import custom_bundle_adjustment
 
+from enum import Enum, auto
+
+class ReconstructionStep(Enum):
+    WAIT = auto()
+    IMAGE_REGISTRATION = auto()
+    TRIANGULATION = auto()
+    LOCAL_BA = auto()
+    GLOBAL_BA = auto()
 
 def extract_colors(image_path, image_id, reconstruction):
     if not reconstruction.extract_colors_for_image(image_id, image_path):
@@ -91,9 +100,25 @@ def initialize_reconstruction(
         extract_colors(controller.image_path, init_pair[0], reconstruction)
     return pycolmap.IncrementalMapperStatus.SUCCESS
 
+def report_statistics(message, reconstruction):
+    guru.info(f"{message}\n{reconstruction.summary()}")
+
+def print_instructions(step, reconstruction):
+    print(f"COLMAP is suggesting to perform {step.name}")
+    skip = False
+    while True:
+        print("Do you want to skip this step? (y/n)")
+        user_input = input().lower()
+        if user_input == "y":
+            skip = True
+            break
+        elif user_input == "n":
+            break
+    return skip
 
 def reconstruct_sub_model(controller, mapper, mapper_options, reconstruction, image_to_register=None):
     """Equivalent to IncrementalMapperController.reconstruct_sub_model(...)"""
+    current_step = ReconstructionStep.WAIT
     # register initial pair
     mapper.begin_reconstruction(reconstruction)
     if reconstruction.num_reg_images() == 0:
@@ -114,6 +139,7 @@ def reconstruct_sub_model(controller, mapper, mapper_options, reconstruction, im
     reg_next_success, prev_reg_next_success = True, True
     print(f"{image_to_register=}")
     while True:
+        current_step = ReconstructionStep.IMAGE_REGISTRATION
         if not (reg_next_success or prev_reg_next_success):
             break
         prev_reg_next_success = reg_next_success
@@ -144,6 +170,7 @@ def reconstruct_sub_model(controller, mapper, mapper_options, reconstruction, im
                 if image_to_register is not None:
                     del image_to_register[reg_trial]
                     print(f"{image_to_register=}")
+                current_step = ReconstructionStep.TRIANGULATION
                 break
             else:
                 logging.info("=> Could not register, trying another image.")
@@ -154,25 +181,62 @@ def reconstruct_sub_model(controller, mapper, mapper_options, reconstruction, im
                 reg_trial >= kMinNumInitialRegTrials
                 and reconstruction.num_reg_images() < options.min_model_size
             ):
+                current_step = ReconstructionStep.WAIT
                 break
         if reg_next_success:
-            mapper.triangulate_image(options.get_triangulation(), next_image_id)
-            # The following is equivalent to mapper.iterative_local_refinement(...)
-            custom_bundle_adjustment.iterative_local_refinement(
-                mapper,
-                options.ba_local_max_refinements,
-                options.ba_local_max_refinement_change,
-                mapper_options,
-                options.get_local_bundle_adjustment(),
-                options.get_triangulation(),
-                next_image_id,
-            )
-            if controller.check_run_global_refinement(
-                reconstruction, ba_prev_num_reg_images, ba_prev_num_points
-            ):
-                iterative_global_refinement(options, mapper_options, mapper)
-                ba_prev_num_points = reconstruction.num_points3D()
-                ba_prev_num_reg_images = reconstruction.num_reg_images()
+            report_statistics("<<<Reconstrctuion after registering image>>>", reconstruction)
+            assert current_step == ReconstructionStep.TRIANGULATION
+            skip = print_instructions(current_step)
+            if not skip:
+                mapper.triangulate_image(options.get_triangulation(), next_image_id)
+                current_step = ReconstructionStep.LOCAL_BA
+                report_statistics("<<<Reconstrctuion after triangulation>>>", reconstruction)
+            else:
+                guru.info("Skipping triangulation")
+                current_step = ReconstructionStep.LOCAL_BA
+            
+            ### Local BA ###
+            assert current_step == ReconstructionStep.LOCAL_BA
+            skip = print_instructions(current_step)
+            if not skip:
+                # The following is equivalent to mapper.iterative_local_refinement(...)
+                custom_bundle_adjustment.iterative_local_refinement(
+                    mapper,
+                    options.ba_local_max_refinements,
+                    options.ba_local_max_refinement_change,
+                    mapper_options,
+                    options.get_local_bundle_adjustment(),
+                    options.get_triangulation(),
+                    next_image_id,
+                )
+                guru.info("Checking for global refinement...")
+                if controller.check_run_global_refinement(
+                    reconstruction, ba_prev_num_reg_images, ba_prev_num_points
+                ):
+                    guru.info("Global refinement is needed")
+                    current_step = ReconstructionStep.GLOBAL_BA
+                else:
+                    guru.info("Global refinement can be skipped")
+                    current_step = ReconstructionStep.WAIT
+                report_statistics("<<<Reconstrctuion after local BA>>>", reconstruction)
+            else:
+                guru.info("Skipping local BA")
+                current_step = ReconstructionStep.WAIT
+
+            ### Global BA ###
+            if current_step == ReconstructionStep.GLOBAL_BA:
+                assert current_step == ReconstructionStep.GLOBAL_BA
+                skip = print_instructions(current_step)
+                if not skip:
+                    iterative_global_refinement(options, mapper_options, mapper)
+                    ba_prev_num_points = reconstruction.num_points3D()
+                    ba_prev_num_reg_images = reconstruction.num_reg_images()
+                    current_step = ReconstructionStep.WAIT
+                    report_statistics("<<<Reconstrctuion after Global BA>>>", reconstruction)
+                else:
+                    guru.info("Skipping global BA")
+                    current_step = ReconstructionStep.WAIT
+            
             if options.extract_colors:
                 extract_colors(
                     controller.image_path, next_image_id, reconstruction
@@ -190,6 +254,7 @@ def reconstruct_sub_model(controller, mapper, mapper_options, reconstruction, im
         if mapper.num_shared_reg_images() >= int(options.max_model_overlap):
             break
         if (not reg_next_success) and prev_reg_next_success:
+            current_step = ReconstructionStep.GLOBAL_BA
             iterative_global_refinement(options, mapper_options, mapper)
     if (
         reconstruction.num_reg_images() >= 2
