@@ -382,20 +382,16 @@ def main(
 
     # main runner
     num_images = pycolmap.Database(database_path).num_images
-    with enlighten.Manager() as manager:
-        with manager.counter(
-            total=num_images, desc="Images registered:"
-        ) as pbar:
-            pbar.update(0, force=True)
-            mapper.add_callback(
-                pycolmap.IncrementalMapperCallback.INITIAL_IMAGE_PAIR_REG_CALLBACK,
-                lambda: pbar.update(2),
-            )
-            mapper.add_callback(
-                pycolmap.IncrementalMapperCallback.NEXT_IMAGE_REG_CALLBACK,
-                lambda: pbar.update(1),
-            )
-            main_incremental_mapper(manager_instance, mapper, image_to_register)
+    for i in range(num_images):
+        mapper.add_callback(
+            pycolmap.IncrementalMapperCallback.INITIAL_IMAGE_PAIR_REG_CALLBACK,
+            lambda: print("Initial image pair registered"),
+        )
+        mapper.add_callback(
+            pycolmap.IncrementalMapperCallback.NEXT_IMAGE_REG_CALLBACK,
+            lambda: print("Next image registered"),
+        )
+        main_incremental_mapper(manager_instance, mapper, image_to_register)
 
     # write and output
     reconstruction_manager.write(output_path)

@@ -2,8 +2,10 @@ from flask import Flask, request, jsonify
 import threading
 import os
 import signal
+from src.main import MyReconstructionManager
 
 app = Flask(__name__)
+reconstruction_manager = MyReconstructionManager()
 
 @app.route('/start', methods=['POST'])
 def start_reconstruction():
@@ -15,8 +17,7 @@ def start_reconstruction():
         return jsonify({"status": "error", "message": "Invalid command"}), 400
 
 def run_main_script():
-    os.kill(os.getpid(), signal.SIGINT)
-    os.system('python -m src.main')
+    reconstruction_manager.main()
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=7777)
