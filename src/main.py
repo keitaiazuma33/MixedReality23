@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 import shutil
 import os
+import requests
 from loguru import logger as guru
 from typing import Any, Dict, List, Optional
 
@@ -288,8 +289,13 @@ class MyReconstructionManager:
         print("REMOVING SPECIFIED IMAGES...")
         print("="*30 + "\n")
         # De-register image: removes points associated with the image
-        image_names = key[1:]
+        image_names = key[1:].split()
         image_ids = get_image_ids(self.database_path)
+
+        valid_image_names = [name for name in image_names if name in image_ids]
+        if len(valid_image_names) != len(image_names):
+            print("Warning: Some image names were invalid and have been excluded.")
+        
         to_de_reg_image_ids = [image_ids[name] for name in image_names]
         assert (all(image_id not in self.de_reg_images for image_id in to_de_reg_image_ids))
 
@@ -308,8 +314,13 @@ class MyReconstructionManager:
         print("="*30 + "\n")
         # Re-register image and more
         print(f"Re-registering an image...")
-        image_names = key[1:]
+        image_names = key[1:].split()
         image_ids = get_image_ids(self.database_path)
+
+        valid_image_names = [name for name in image_names if name in image_ids]
+        if len(valid_image_names) != len(image_names):
+            print("Warning: Some image names were invalid and have been excluded.")
+
         to_reg_image_ids = [image_ids[name] for name in image_names]
         assert (all(image_id in self.de_reg_images for image_id in to_reg_image_ids))
 
@@ -332,6 +343,16 @@ class MyReconstructionManager:
         current_recon = self.reconstruction_manager.get(0)
         self.export_ply(current_recon, "Check")
 
+    def handle_d(self):
+        print("\n" + "="*30)
+        print("DENSE RECONSTRUCTION...")
+        print("="*30 + "\n")
+
+        mvs_path = Path(f'{self.output_path}/mvs')
+        pycolmap.undistort_images(mvs_path, f"{self.output_path}/sfm/0", self.image_dir)
+        pycolmap.patch_match_stereo(mvs_path)  # requires compilation with CUDA
+        pycolmap.stereo_fusion(mvs_path / "dense.ply", mvs_path)
+    
     def main(self):
         parser = argparse.ArgumentParser()
         parser.add_argument('--scene_name', type=str, nargs='?', default='test', help='Name of the scene')
@@ -379,40 +400,43 @@ class MyReconstructionManager:
         self.de_reg_images = []
         
         while True:
-            print(f"Please press 'n', 'r', 'a', 'e', 'd', 'q', or 'h' for help.")
-            key = input().strip().split()
-            if key[0] == 'n':
-                self.handle_n()
-            elif key[0] == 'r':
-                self.handle_r(key)
-            elif key[0] == 'a':
-                self.handle_a(key)
-            elif key[0] == 'e':
-                self.handle_e()
-            elif key[0] == 'd':
-                print("\n" + "="*30)
-                print("DENSE RECONSTRUCTION...")
-                print("="*30 + "\n")
-
-                mvs_path = Path(f'{self.output_path}/mvs')
-                pycolmap.undistort_images(mvs_path, f"{self.output_path}/sfm/0", image_dir)
-                pycolmap.patch_match_stereo(mvs_path)  # requires compilation with CUDA
-                pycolmap.stereo_fusion(mvs_path / "dense.ply", mvs_path)
-            elif key[0] == 'q':
-                print("Quitting...")
-                break
-            elif key[0] == 'h':
-                print("\n" + "="*30)
-                print("HELP")
-                print("="*30 + "\n")
-                print("Press 'n' after adding one new image.\n")
-                print("Enter 'r [...]' to remove specified images.\n")
-                print("Enter 'a [...]' to add back specified images.\n")
-                print("Press 'e' to export PLY file and text.\n")
-                print("Press 'd' to perform dense reconstruction.\n")
-                print("Press 'q' to quit.\n")
+            # print(f"Please press 'n', 'r', 'a', 'e', 'd', 'q', or 'h' for help.")
+            url = 'http://localhost:7007/get_action'
+            response = requests.get(url)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('status') == 'waiting':
+                    continue
+                key = data.get('action')
+                print(f"Received action: {key}")
+                if key[0] == 'n':
+                    self.handle_n()
+                elif key[0] == 'r':
+                    self.handle_r(key)
+                elif key[0] == 'a':
+                    self.handle_a(key)
+                elif key[0] == 'e':
+                    self.handle_e()
+                elif key[0] == 'd':
+                    self.handle_d()
+                elif key[0] == 'q':
+                    print("Quitting...")
+                    break
+                elif key[0] == 'h':
+                    print("\n" + "="*30)
+                    print("HELP")
+                    print("="*30 + "\n")
+                    print("Press 'n' after adding one new image.\n")
+                    print("Enter 'r [...]' to remove specified images.\n")
+                    print("Enter 'a [...]' to add back specified images.\n")
+                    print("Press 'e' to export PLY file and text.\n")
+                    print("Press 'd' to perform dense reconstruction.\n")
+                    print("Press 'q' to quit.\n")
+                else:
+                    print("Invalid key. Please press 'h' for help.\n")
             else:
-                print("Invalid key. Please press 'h' for help.\n")
+                print("Failed to get action from server.")
+                break
 
 
 if __name__ == "__main__":

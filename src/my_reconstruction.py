@@ -6,6 +6,7 @@ import shutil
 import time
 import urllib.request
 import zipfile
+import requests
 from pathlib import Path
 
 import enlighten
@@ -106,15 +107,23 @@ def report_statistics(message, reconstruction):
 
 def print_instructions(step, reconstruction=None):
     print(f"COLMAP is suggesting to perform {step.name}")
+    print("Do you want to skip this step? (y/n)")
     skip = False
-    while True:
-        print("Do you want to skip this step? (y/n)")
-        user_input = input().lower()
+
+    # Change this URL to the server URL
+    url = 'http://localhost:7007/input_request'
+    data = {'step_name': step.name}
+    response = requests.post(url, json=data)
+
+    if response.status_code == 200:
+        user_input = response.json().get('input').lower()
         if user_input == "y":
             skip = True
-            break
         elif user_input == "n" or user_input == "":
-            break
+            skip = False
+    else:
+        print("Failed to notify server about input request.")
+    
     return skip
 
 def reconstruct_sub_model(manager_instance, controller, mapper, mapper_options, reconstruction, image_to_register=None):
