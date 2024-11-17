@@ -14,6 +14,7 @@ from loguru import logger as guru
 import pycolmap
 from pycolmap import logging
 from third_party.colmap_310.pycolmap import custom_bundle_adjustment
+#from src.main import export_ply
 
 from enum import Enum, auto
 
@@ -103,7 +104,7 @@ def initialize_reconstruction(
 def report_statistics(message, reconstruction):
     guru.info(f"{message}\n{reconstruction.summary()}")
 
-def print_instructions(step, reconstruction):
+def print_instructions(step, reconstruction=None):
     print(f"COLMAP is suggesting to perform {step.name}")
     skip = False
     while True:
@@ -112,11 +113,11 @@ def print_instructions(step, reconstruction):
         if user_input == "y":
             skip = True
             break
-        elif user_input == "n":
+        elif user_input == "n" or user_input == "":
             break
     return skip
 
-def reconstruct_sub_model(controller, mapper, mapper_options, reconstruction, image_to_register=None):
+def reconstruct_sub_model(manager_instance, controller, mapper, mapper_options, reconstruction, image_to_register=None):
     """Equivalent to IncrementalMapperController.reconstruct_sub_model(...)"""
     current_step = ReconstructionStep.WAIT
     # register initial pair
@@ -189,8 +190,9 @@ def reconstruct_sub_model(controller, mapper, mapper_options, reconstruction, im
             skip = print_instructions(current_step)
             if not skip:
                 mapper.triangulate_image(options.get_triangulation(), next_image_id)
-                current_step = ReconstructionStep.LOCAL_BA
+                manager_instance.export_ply(reconstruction, current_step.name)
                 report_statistics("<<<Reconstrctuion after triangulation>>>", reconstruction)
+                current_step = ReconstructionStep.LOCAL_BA
             else:
                 guru.info("Skipping triangulation")
                 current_step = ReconstructionStep.LOCAL_BA
@@ -209,6 +211,8 @@ def reconstruct_sub_model(controller, mapper, mapper_options, reconstruction, im
                     options.get_triangulation(),
                     next_image_id,
                 )
+                manager_instance.export_ply(reconstruction, current_step.name)
+                report_statistics("<<<Reconstrctuion after local BA>>>", reconstruction)
                 guru.info("Checking for global refinement...")
                 if controller.check_run_global_refinement(
                     reconstruction, ba_prev_num_reg_images, ba_prev_num_points
@@ -218,7 +222,6 @@ def reconstruct_sub_model(controller, mapper, mapper_options, reconstruction, im
                 else:
                     guru.info("Global refinement can be skipped")
                     current_step = ReconstructionStep.WAIT
-                report_statistics("<<<Reconstrctuion after local BA>>>", reconstruction)
             else:
                 guru.info("Skipping local BA")
                 current_step = ReconstructionStep.WAIT
@@ -231,8 +234,9 @@ def reconstruct_sub_model(controller, mapper, mapper_options, reconstruction, im
                     iterative_global_refinement(options, mapper_options, mapper)
                     ba_prev_num_points = reconstruction.num_points3D()
                     ba_prev_num_reg_images = reconstruction.num_reg_images()
-                    current_step = ReconstructionStep.WAIT
+                    manager_instance.export_ply(reconstruction, current_step.name)
                     report_statistics("<<<Reconstrctuion after Global BA>>>", reconstruction)
+                    current_step = ReconstructionStep.WAIT
                 else:
                     guru.info("Skipping global BA")
                     current_step = ReconstructionStep.WAIT
@@ -254,8 +258,14 @@ def reconstruct_sub_model(controller, mapper, mapper_options, reconstruction, im
         if mapper.num_shared_reg_images() >= int(options.max_model_overlap):
             break
         if (not reg_next_success) and prev_reg_next_success:
-            current_step = ReconstructionStep.GLOBAL_BA
-            iterative_global_refinement(options, mapper_options, mapper)
+            skip = print_instructions(ReconstructionStep.GLOBAL_BA, reconstruction)
+            if not skip:
+                current_step = ReconstructionStep.GLOBAL_BA
+                iterative_global_refinement(options, mapper_options, mapper)
+                manager_instance.export_ply(reconstruction, current_step.name)
+                report_statistics("<<<Reconstrctuion after Global BA>>>", reconstruction)
+                current_step = ReconstructionStep.WAIT
+
     if (
         reconstruction.num_reg_images() >= 2
         and reconstruction.num_reg_images() != ba_prev_num_reg_images
@@ -265,7 +275,7 @@ def reconstruct_sub_model(controller, mapper, mapper_options, reconstruction, im
     return pycolmap.IncrementalMapperStatus.SUCCESS
 
 
-def reconstruct(controller, mapper_options, image_to_register=None):
+def reconstruct(manager_instance, controller, mapper_options, image_to_register=None):
     """Equivalent to IncrementalMapperController.reconstruct(...)"""
     options = controller.options
     reconstruction_manager = controller.reconstruction_manager
@@ -283,7 +293,7 @@ def reconstruct(controller, mapper_options, image_to_register=None):
             reconstruction_idx = 0
         reconstruction = reconstruction_manager.get(reconstruction_idx)
         status = reconstruct_sub_model(
-            controller, mapper, mapper_options, reconstruction, image_to_register
+            manager_instance, controller, mapper, mapper_options, reconstruction, image_to_register
         )
         if status == pycolmap.IncrementalMapperStatus.INTERRUPTED:
             mapper.end_reconstruction(False)
@@ -326,14 +336,14 @@ def reconstruct(controller, mapper_options, image_to_register=None):
             logging.fatal(f"Unknown reconstruction status: {status}")
 
 
-def main_incremental_mapper(controller, image_to_register=None):
+def main_incremental_mapper(manager_instance, controller, image_to_register=None):
     """Equivalent to IncrementalMapperController.run()"""
     timer = pycolmap.Timer()
     timer.start()
     if not controller.load_database():
         return
     init_mapper_options = controller.options.get_mapper()
-    reconstruct(controller, init_mapper_options, image_to_register)
+    reconstruct(manager_instance, controller, init_mapper_options, image_to_register)
 
     for i in range(2):  # number of relaxations
         if controller.reconstruction_manager.size() > 0:
@@ -342,16 +352,17 @@ def main_incremental_mapper(controller, image_to_register=None):
         init_mapper_options.init_min_num_inliers = int(
             init_mapper_options.init_min_num_inliers / 2
         )
-        reconstruct(controller, init_mapper_options, image_to_register)
+        reconstruct(manager_instance, controller, init_mapper_options, image_to_register)
         if controller.reconstruction_manager.size() > 0:
             break
         logging.info("=> Relaxing the initialization constraints")
         init_mapper_options.init_min_tri_angle /= 2
-        reconstruct(controller, init_mapper_options, image_to_register)
+        reconstruct(manager_instance, controller, init_mapper_options, image_to_register)
     timer.print_minutes()
 
 
 def main(
+    manager_instance,
     database_path,
     output_path,
     reconstruction_manager,
@@ -375,7 +386,7 @@ def main(
                 pycolmap.IncrementalMapperCallback.NEXT_IMAGE_REG_CALLBACK,
                 lambda: pbar.update(1),
             )
-            main_incremental_mapper(mapper, image_to_register)
+            main_incremental_mapper(manager_instance, mapper, image_to_register)
 
     # write and output
     reconstruction_manager.write(output_path)
