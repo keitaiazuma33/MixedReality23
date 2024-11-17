@@ -1,8 +1,3 @@
-global export_iter
-export_iter = 0
-global scene_name
-scene_name = None
-
 import pycolmap
 from pycolmap import logging
 import argparse
@@ -190,7 +185,7 @@ class MyReconstructionManager:
         with sfm_pairs.open('w') as f:
             f.writelines(sfm_pairs_content)
 
-    def instantiate_reconstruction_manager(
+    def _instantiate_reconstruction_manager(
             self,
             database_path,
             image_path,
@@ -253,6 +248,89 @@ class MyReconstructionManager:
         recon.write_text(ply_file_dir)
         if description == 'Check' or description == '':
             self.export_iter += 1
+    
+    def handle_n(self):
+        print("\n" + "="*30)
+        print("ADDING NEW IMAGES...")
+        print("="*30 + "\n")
+
+        print(f"Resuming from existing pairs-sfm.txt...")
+        # 1. Feature extraction and matching
+        references = sorted([str(p.relative_to(self.image_dir)) for p in self.image_dir.iterdir()])
+        new_images = [img for img in references if img not in self.processed_images]
+        
+        print(f"Resuming from existing pairs-sfm.txt...")
+        sfm_new_pairs = self.output_path / 'pairs-sfm_new.txt'
+        generate_new_pairs(self.sfm_pairs, sfm_new_pairs, new_image_list=new_images, ref_list=references)
+        self.append_new_pairs(self.sfm_pairs, sfm_new_pairs)
+        print(f"Extracting Features for new images...")  # Creates features.h5
+        extract_features.main(self.feature_conf, self.image_dir, image_list=references, feature_path=self.features_file)
+        print(f"Matching extracted features...")    # Creates matches.h5
+        match_features.main(self.matcher_conf, sfm_new_pairs, features=self.features_file, matches=self.matches_file, overwrite=True)
+        
+        self.overwrite_database(self.image_dir, self.recon_dir, new_images, sfm_new_pairs, self.features_file, self.matches_file, image_list=references)
+
+        model_path = self.recon_dir / "0"
+        recon = my_reconstruction.main(self, self.database_path, self.recon_dir, self.reconstruction_manager, self.mapper)[0]
+        if recon is not None:
+            guru.info(
+                f"Reconstruction statistics:\n{recon.summary()}"
+            )
+        self.processed_images.update(new_images)
+        
+        guru.info("Exporting PLY file and text")
+        assert(self.reconstruction_manager.size() <= 1)
+        current_recon = self.reconstruction_manager.get(0)
+        self.export_ply(current_recon)
+
+    def handle_r(self, key):
+        print("\n" + "="*30)
+        print("REMOVING SPECIFIED IMAGES...")
+        print("="*30 + "\n")
+        # De-register image: removes points associated with the image
+        image_names = key[1:]
+        image_ids = get_image_ids(self.database_path)
+        to_de_reg_image_ids = [image_ids[name] for name in image_names]
+        assert (all(image_id not in self.de_reg_images for image_id in to_de_reg_image_ids))
+
+        print(f"De-registering images (image_ids = {to_de_reg_image_ids})...")
+        recon = self.reconstruction_manager.get(0)
+        for image_id in to_de_reg_image_ids:
+            assert (image_id not in self.de_reg_images)
+            recon.deregister_image(image_id)
+            self.de_reg_images.append(image_id)
+        print(f"{recon.reg_image_ids()=}")
+        print(recon.summary())
+    
+    def handle_a(self, key):
+        print("\n" + "="*30)
+        print("ADDING BACK SPECIFIED IMAGES...")
+        print("="*30 + "\n")
+        # Re-register image and more
+        print(f"Re-registering an image...")
+        image_names = key[1:]
+        image_ids = get_image_ids(self.database_path)
+        to_reg_image_ids = [image_ids[name] for name in image_names]
+        assert (all(image_id in self.de_reg_images for image_id in to_reg_image_ids))
+
+        self.de_reg_images = [element for element in self.de_reg_images if element not in to_reg_image_ids]
+        recon = my_reconstruction.main(self, self.database_path, self.recon_dir, self.reconstruction_manager, self.mapper, image_to_register=to_reg_image_ids)[0]
+        if recon is not None:
+            self.export_ply(recon)
+            guru.info(
+                f"Reconstruction statistics:\n{recon.summary()}"
+            )
+        print(recon.summary())
+    
+    def handle_e(self):
+        print("\n" + "="*30)
+        print("EXPORTING...")
+        print("="*30 + "\n")
+
+        guru.info("Exporting PLY file and text")
+        assert(self.reconstruction_manager.size() <= 1)
+        current_recon = self.reconstruction_manager.get(0)
+        self.export_ply(current_recon, "Check")
 
     def main(self):
         parser = argparse.ArgumentParser()
@@ -265,135 +343,59 @@ class MyReconstructionManager:
         feature_extractor = args.feature_extractor
         feature_matcher = args.feature_matcher
 
-        image_dir = Path(f'temp/images/{self.scene_name}')
-        output_path = Path(f'temp/outputs/{self.scene_name}')
-        self.delete_directory_if_exists(output_path)
-        output_path.mkdir(parents=True, exist_ok=True)
+        self.image_dir = Path(f'temp/images/{self.scene_name}')
+        self.output_path = Path(f'temp/outputs/{self.scene_name}')
+        self.delete_directory_if_exists(self.output_path)
+        self.output_path.mkdir(parents=True, exist_ok=True)
 
-        sfm_pairs = output_path / 'pairs-sfm.txt'
-        loc_pairs = output_path / 'pairs-loc.txt'
-        recon_dir = output_path / 'reconstruction'
-        features_file = output_path / 'features.h5'
-        matches_file = output_path / 'matches.h5'
-        model_path = recon_dir / "0"
-        database_path = recon_dir / "database.db"
+        self.sfm_pairs = self.output_path / 'pairs-sfm.txt'
+        loc_pairs = self.output_path / 'pairs-loc.txt'
+        self.recon_dir = self.output_path / 'reconstruction'
+        self.features_file = self.output_path / 'features.h5'
+        self.matches_file = self.output_path / 'matches.h5'
+        model_path = self.recon_dir / "0"
+        self.database_path = self.recon_dir / "database.db"
 
-        feature_conf = extract_features.confs[feature_extractor]
-        matcher_conf = match_features.confs[feature_matcher]
+        self.feature_conf = extract_features.confs[feature_extractor]
+        self.matcher_conf = match_features.confs[feature_matcher]
 
         # 1. Feature extraction and matching
-        references = sorted([str(p.relative_to(image_dir)) for p in image_dir.iterdir()])
-        processed_images = set(references)
+        references = sorted([str(p.relative_to(self.image_dir)) for p in self.image_dir.iterdir()])
+        self.processed_images = set(references)
         print(f"References: {references}")
 
         print(f"Generating Exhaustive pairs...")    # Creates pairs-sfm.txt
-        pairs_from_exhaustive.main(sfm_pairs, image_list=references)
+        pairs_from_exhaustive.main(self.sfm_pairs, image_list=references)
         print(f"Extracting Features for images...") # Creates features.h5
-        extract_features.main(feature_conf, image_dir, image_list=references, feature_path=features_file)
+        extract_features.main(self.feature_conf, self.image_dir, image_list=references, feature_path=self.features_file)
         print(f"Matching extracted features...")    # Creates matches.h5
-        match_features.main(matcher_conf, sfm_pairs, features=features_file, matches=matches_file)
+        match_features.main(self.matcher_conf, self.sfm_pairs, features=self.features_file, matches=self.matches_file)
         
         # 2. Generate 3D reconstruction
-        recon = self.init_reconstruction(recon_dir, image_dir, sfm_pairs, features_file, matches_file, image_list=references)
+        recon = self.init_reconstruction(self.recon_dir, self.image_dir, self.sfm_pairs, self.features_file, self.matches_file, image_list=references)
         self.export_ply(recon)
 
-        reconstruction_manager, mapper = self.instantiate_reconstruction_manager(database_path, image_dir, model_path)
-        de_reg_images = []
+        self.reconstruction_manager, self.mapper = self._instantiate_reconstruction_manager(self.database_path, self.image_dir, model_path)
+        self.de_reg_images = []
         
         while True:
             print(f"Please press 'n', 'r', 'a', 'e', 'd', 'q', or 'h' for help.")
             key = input().strip().split()
             if key[0] == 'n':
-                print("\n" + "="*30)
-                print("ADDING NEW IMAGES...")
-                print("="*30 + "\n")
-
-                print(f"Resuming from existing pairs-sfm.txt...")
-                # 1. Feature extraction and matching
-                references = sorted([str(p.relative_to(image_dir)) for p in image_dir.iterdir()])
-                new_images = [img for img in references if img not in processed_images]
-                
-                print(f"Resuming from existing pairs-sfm.txt...")
-                sfm_new_pairs = output_path / 'pairs-sfm_new.txt'
-                generate_new_pairs(sfm_pairs, sfm_new_pairs, new_image_list=new_images, ref_list=references)
-                self.append_new_pairs(sfm_pairs, sfm_new_pairs)
-                print(f"Extracting Features for new images...")  # Creates features.h5
-                extract_features.main(feature_conf, image_dir, image_list=references, feature_path=features_file)
-                print(f"Matching extracted features...")    # Creates matches.h5
-                match_features.main(matcher_conf, sfm_new_pairs, features=features_file, matches=matches_file, overwrite=True)
-                
-                #update_database(recon_dir, new_recon_dir, image_dir, sfm_new_pairs, features, matches, image_list=references)
-                self.overwrite_database(image_dir, recon_dir, new_images, sfm_new_pairs, features_file, matches_file, image_list=references)
-                # 2. Generate 3D reconstruction
-                # recon = update_reconstruction(
-                #     recon_dir, image_dir, sfm_new_pairs, features, matches, image_list=references)
-
-                model_path = recon_dir / "0"
-                recon = my_reconstruction.main(database_path, recon_dir, reconstruction_manager, mapper)[0]
-                if recon is not None:
-                    guru.info(
-                        f"Reconstruction statistics:\n{recon.summary()}"
-                    )
-                processed_images.update(new_images)
-                
-                guru.info("Exporting PLY file and text")
-                assert(reconstruction_manager.size() <= 1)
-                current_recon = reconstruction_manager.get(0)
-                self.export_ply(current_recon)
-            
+                self.handle_n()
             elif key[0] == 'r':
-                print("\n" + "="*30)
-                print("REMOVING SPECIFIED IMAGES...")
-                print("="*30 + "\n")
-                # De-register image: removes points associated with the image
-                image_names = key[1:]
-                image_ids = get_image_ids(database_path)
-                to_de_reg_image_ids = [image_ids[name] for name in image_names]
-                assert (all(image_id not in de_reg_images for image_id in to_de_reg_image_ids))
-
-                print(f"De-registering images (image_ids = {to_de_reg_image_ids})...")
-                recon = reconstruction_manager.get(0)
-                for image_id in to_de_reg_image_ids:
-                    assert (image_id not in de_reg_images)
-                    recon.deregister_image(image_id)
-                    de_reg_images.append(image_id)
-                print(f"{recon.reg_image_ids()=}")
-                print(recon.summary())
+                self.handle_r(key)
             elif key[0] == 'a':
-                print("\n" + "="*30)
-                print("ADDING BACK SPECIFIED IMAGES...")
-                print("="*30 + "\n")
-                # Re-register image and more
-                print(f"Re-registering an image...")
-                image_names = key[1:]
-                image_ids = get_image_ids(database_path)
-                to_reg_image_ids = [image_ids[name] for name in image_names]
-                assert (all(image_id in de_reg_images for image_id in to_reg_image_ids))
-
-                de_reg_images = [element for element in de_reg_images if element not in to_reg_image_ids]
-                recon = my_reconstruction.main(self, database_path, recon_dir, reconstruction_manager, mapper, image_to_register=to_reg_image_ids)[0]
-                if recon is not None:
-                    self.export_ply(recon)
-                    guru.info(
-                        f"Reconstruction statistics:\n{recon.summary()}"
-                    )
-                print(recon.summary())
+                self.handle_a(key)
             elif key[0] == 'e':
-                print("\n" + "="*30)
-                print("EXPORTING...")
-                print("="*30 + "\n")
-
-                guru.info("Exporting PLY file and text")
-                assert(reconstruction_manager.size() <= 1)
-                current_recon = reconstruction_manager.get(0)
-                self.export_ply(current_recon, "Check")
+                self.handle_e()
             elif key[0] == 'd':
                 print("\n" + "="*30)
                 print("DENSE RECONSTRUCTION...")
                 print("="*30 + "\n")
 
-                mvs_path = Path(f'{output_path}/mvs')
-                pycolmap.undistort_images(mvs_path, f"{output_path}/sfm/0", image_dir)
+                mvs_path = Path(f'{self.output_path}/mvs')
+                pycolmap.undistort_images(mvs_path, f"{self.output_path}/sfm/0", image_dir)
                 pycolmap.patch_match_stereo(mvs_path)  # requires compilation with CUDA
                 pycolmap.stereo_fusion(mvs_path / "dense.ply", mvs_path)
             elif key[0] == 'q':
@@ -411,30 +413,6 @@ class MyReconstructionManager:
                 print("Press 'q' to quit.\n")
             else:
                 print("Invalid key. Please press 'h' for help.\n")
-        
-
-        """
-        # 3. Visualization
-        fig = viz_3d.init_figure()
-        viz_3d.plot_reconstruction(
-            fig, model, color='rgba(255,0,0,0.5)', name="mapping", points_rgb=True)
-        fig.show()
-        
-        print("Operating on pycolmap")
-        output_path.mkdir(exist_ok=True)
-        mvs_path = output_path / "mvs"
-        database_path = output_path / "database.db"
-
-        pycolmap.extract_features(database_path, image_dir)
-        pycolmap.match_exhaustive(database_path)
-        maps = pycolmap.incremental_mapping(database_path, image_dir, output_path)
-        maps[0].write(output_path)
-
-        # dense reconstruction
-        pycolmap.undistort_images(mvs_path, output_path, image_dir)
-        pycolmap.patch_match_stereo(mvs_path)  # requires compilation with CUDA
-        pycolmap.stereo_fusion(mvs_path / "dense.ply", mvs_path)
-        """
 
 
 if __name__ == "__main__":
