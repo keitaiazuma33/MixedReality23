@@ -16,6 +16,17 @@ def start_reconstruction():
     else:
         return jsonify({"status": "error", "message": "Invalid command"}), 400
 
+@app.route('/action', methods=['POST'])
+def action():
+    data = request.json
+    action = data.get('action')
+    if action:
+        if not reconstruction_manager.process_action(action):
+            return jsonify({"status": "success", "message": "Quitting..."}), 200
+        return jsonify({"status": "success", "message": "Action processed"}), 200
+    else:
+        return jsonify({"status": "error", "message": "Invalid action"}), 400
+
 def run_main_script():
     reconstruction_manager.main()
 

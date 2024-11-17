@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import os
 import requests
+import threading
 from loguru import logger as guru
 from typing import Any, Dict, List, Optional
 
@@ -20,6 +21,9 @@ from . import my_reconstruction
 from third_party.Hierarchical_Localization.hloc.triangulation import OutputCapture, import_features, import_matches, estimation_and_geometric_verification, parse_option_args
 from .generate_pairs import generate_new_pairs
 from third_party.colmap_310.pycolmap import custom_incremental_mapping
+
+# global mutex, cv
+# cv = threading.Condition()
 
 class MyReconstructionManager:
     def __init__(self):
@@ -353,6 +357,34 @@ class MyReconstructionManager:
         pycolmap.patch_match_stereo(mvs_path)  # requires compilation with CUDA
         pycolmap.stereo_fusion(mvs_path / "dense.ply", mvs_path)
     
+    def process_action(self, action):
+        if action == 'n':
+            self.handle_n()
+        elif action.startswith('r'):
+            self.handle_r(action)
+        elif action.startswith('a'):
+            self.handle_a(action)
+        elif action == 'e':
+            self.handle_e()
+        elif action == 'd':
+            self.handle_d()
+        elif action == 'q':
+            print("Quitting...")
+            return False
+        elif action == 'h':
+            print("\n" + "="*30)
+            print("HELP")
+            print("="*30 + "\n")
+            print("Press 'n' after adding one new image.\n")
+            print("Enter 'r [...]' to remove specified images.\n")
+            print("Enter 'a [...]' to add back specified images.\n")
+            print("Press 'e' to export PLY file and text.\n")
+            print("Press 'd' to perform dense reconstruction.\n")
+            print("Press 'q' to quit.\n")
+        else:
+            print("Invalid key. Please press 'h' for help.\n")
+        return True
+    
     def main(self):
         parser = argparse.ArgumentParser()
         parser.add_argument('--scene_name', type=str, nargs='?', default='test', help='Name of the scene')
@@ -398,45 +430,6 @@ class MyReconstructionManager:
 
         self.reconstruction_manager, self.mapper = self._instantiate_reconstruction_manager(self.database_path, self.image_dir, model_path)
         self.de_reg_images = []
-        
-        while True:
-            # print(f"Please press 'n', 'r', 'a', 'e', 'd', 'q', or 'h' for help.")
-            url = 'http://localhost:7007/get_action'
-            response = requests.get(url)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('status') == 'waiting':
-                    continue
-                key = data.get('action')
-                print(f"Received action: {key}")
-                if key[0] == 'n':
-                    self.handle_n()
-                elif key[0] == 'r':
-                    self.handle_r(key)
-                elif key[0] == 'a':
-                    self.handle_a(key)
-                elif key[0] == 'e':
-                    self.handle_e()
-                elif key[0] == 'd':
-                    self.handle_d()
-                elif key[0] == 'q':
-                    print("Quitting...")
-                    break
-                elif key[0] == 'h':
-                    print("\n" + "="*30)
-                    print("HELP")
-                    print("="*30 + "\n")
-                    print("Press 'n' after adding one new image.\n")
-                    print("Enter 'r [...]' to remove specified images.\n")
-                    print("Enter 'a [...]' to add back specified images.\n")
-                    print("Press 'e' to export PLY file and text.\n")
-                    print("Press 'd' to perform dense reconstruction.\n")
-                    print("Press 'q' to quit.\n")
-                else:
-                    print("Invalid key. Please press 'h' for help.\n")
-            else:
-                print("Failed to get action from server.")
-                break
 
 
 if __name__ == "__main__":
