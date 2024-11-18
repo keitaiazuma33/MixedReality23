@@ -93,12 +93,17 @@ class MyReconstructionManager:
         if not skip_geometric_verification:
             estimation_and_geometric_verification(database, pairs, verbose)
 
-        reconstruction = custom_incremental_mapping.main(database, image_dir, recon_dir)[0]
-        if reconstruction is not None:
+        reconstruction = custom_incremental_mapping.main(database, image_dir, recon_dir)
+
+        if reconstruction is not None and len(reconstruction) > 0:
+            reconstruction = reconstruction[0]
             guru.info(
                 f"Reconstruction statistics:\n{reconstruction.summary()}"
                 + f"\n\tnum_input_images = {len(image_ids)}"
             )
+        else:
+            guru.error("Reconstruction failed.")
+            reconstruction = None
         return reconstruction
 
     def update_database(
@@ -455,35 +460,50 @@ class MyReconstructionManager:
             self.feature_conf = extract_features.confs[feature_extractor]
             self.matcher_conf = match_features.confs[feature_matcher]
 
-            # 1. Feature extraction and matching
-            references = sorted([str(p.relative_to(self.image_dir)) for p in self.image_dir.iterdir()])
-            self.processed_images = set(references)
-            print(f"References: {references}")
+            def initial_step():
+                # 1. Feature extraction and matching
+                references = sorted([str(p.relative_to(self.image_dir)) for p in self.image_dir.iterdir()])
+                self.processed_images = set(references)
+                print(f"References: {references}")
 
-            print(f"Generating Exhaustive pairs...")    # Creates pairs-sfm.txt
-            pairs_from_exhaustive.main(self.sfm_pairs, image_list=references)
-            print(f"Extracting Features for images...") # Creates features.h5
-            extract_features.main(self.feature_conf, self.image_dir, image_list=references, feature_path=self.features_file)
-            print(f"Matching extracted features...")    # Creates matches.h5
-            match_features.main(self.matcher_conf, self.sfm_pairs, features=self.features_file, matches=self.matches_file)
+                print(f"Generating Exhaustive pairs...")    # Creates pairs-sfm.txt
+                pairs_from_exhaustive.main(self.sfm_pairs, image_list=references)
+                print(f"Extracting Features for images...") # Creates features.h5
+                extract_features.main(self.feature_conf, self.image_dir, image_list=references, feature_path=self.features_file)
+                print(f"Matching extracted features...")    # Creates matches.h5
+                match_features.main(self.matcher_conf, self.sfm_pairs, features=self.features_file, matches=self.matches_file)
+                
+                # 2. Generate 3D reconstruction
+                recon = self.init_reconstruction(self.recon_dir, self.image_dir, self.sfm_pairs, self.features_file, self.matches_file, image_list=references)
+                return recon
+
+            recon = initial_step()
+
+            if recon is not None:
+                self.export_ply(recon)
+
+                self.reconstruction_manager, self.mapper = self._instantiate_reconstruction_manager(self.database_path, self.image_dir, model_path)
+                self.de_reg_images = []
+                data['recon_done'] = True
+                data['new_request'] = False
+                cv.notify()
             
-            # 2. Generate 3D reconstruction
-            recon = self.init_reconstruction(self.recon_dir, self.image_dir, self.sfm_pairs, self.features_file, self.matches_file, image_list=references)
-            self.export_ply(recon)
-
-            self.reconstruction_manager, self.mapper = self._instantiate_reconstruction_manager(self.database_path, self.image_dir, model_path)
-            self.de_reg_images = []
-
-            data['recon_done'] = True
-            data['new_request'] = False
-            cv.notify()
+            else:
+                data['error'] = "Reconstruction failed."
+                data['recon_done'] = True
+                data['new_request'] = False
+                cv.notify()
 
             while True:
                 print("Waiting for new request...")
                 while data['new_request'] == False:
                     cv.wait()
+
+                if not os.path.exists(os.path.join(self.database_path, '0')):
+                    guru.info("Making reconstruction from scratch ...")
+                    initial_step()
                 
-                if not self.process_action(cv, data):
+                elif not self.process_action(cv, data):
                     break
 
                 data['recon_done'] = True
