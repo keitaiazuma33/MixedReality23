@@ -22,8 +22,6 @@ from third_party.Hierarchical_Localization.hloc.triangulation import OutputCaptu
 from .generate_pairs import generate_new_pairs
 from third_party.colmap_310.pycolmap import custom_incremental_mapping
 
-# global mutex, cv
-# cv = threading.Condition()
 
 class MyReconstructionManager:
     def __init__(self):
@@ -254,7 +252,7 @@ class MyReconstructionManager:
         if description == 'Check' or description == '':
             self.export_iter += 1
     
-    def handle_n(self):
+    def handle_n(self, cv, data):
         print("\n" + "="*30)
         print("ADDING NEW IMAGES...")
         print("="*30 + "\n")
@@ -276,7 +274,7 @@ class MyReconstructionManager:
         self.overwrite_database(self.image_dir, self.recon_dir, new_images, sfm_new_pairs, self.features_file, self.matches_file, image_list=references)
 
         model_path = self.recon_dir / "0"
-        recon = my_reconstruction.main(self, self.database_path, self.recon_dir, self.reconstruction_manager, self.mapper)[0]
+        recon = my_reconstruction.main(self, self.database_path, self.recon_dir, self.reconstruction_manager, self.mapper, image_to_register=None, cv=cv, data=data)[0]
         if recon is not None:
             guru.info(
                 f"Reconstruction statistics:\n{recon.summary()}"
@@ -285,15 +283,29 @@ class MyReconstructionManager:
         
         guru.info("Exporting PLY file and text")
         assert(self.reconstruction_manager.size() <= 1)
-        current_recon = self.reconstruction_manager.get(0)
-        self.export_ply(current_recon)
+        recon = self.reconstruction_manager.get(0)
+        if recon is not None:
+            self.export_ply(recon)
+            guru.info(
+                f"Reconstruction statistics:\n{recon.summary()}"
+            )
+            data['recon_done'] = True
+            data['error'] = None
+        else:
+            data['error'] = "Reconstruction failed when re-registering image(s)."
+            guru.error("Reconstruction failed when re-registering image(s).")
+        
+        # Empty the task
+        data['new_request'] = False
+        data['task'] = None
+        print(recon.summary())
 
-    def handle_r(self, key):
+    def handle_r(self, data):
         print("\n" + "="*30)
         print("REMOVING SPECIFIED IMAGES...")
         print("="*30 + "\n")
         # De-register image: removes points associated with the image
-        image_names = key[1:].split()
+        image_names = data['task'][1:].split()
         image_ids = get_image_ids(self.database_path)
 
         valid_image_names = [name for name in image_names if name in image_ids]
@@ -309,16 +321,32 @@ class MyReconstructionManager:
             assert (image_id not in self.de_reg_images)
             recon.deregister_image(image_id)
             self.de_reg_images.append(image_id)
+        
+        if recon is not None:
+            self.export_ply(recon)
+            guru.info(
+                f"Reconstruction statistics:\n{recon.summary()}"
+            )
+            data['recon_done'] = True
+            data['error'] = None
+        else:
+            data['error'] = "Reconstruction failed when re-registering image(s)."
+            guru.error("Reconstruction failed when re-registering image(s).")
+        
+        # Empty the task
+        data['new_request'] = False
+        data['task'] = None
         print(f"{recon.reg_image_ids()=}")
         print(recon.summary())
+
     
-    def handle_a(self, key):
+    def handle_a(self, cv, data):
         print("\n" + "="*30)
         print("ADDING BACK SPECIFIED IMAGES...")
         print("="*30 + "\n")
         # Re-register image and more
         print(f"Re-registering an image...")
-        image_names = key[1:].split()
+        image_names = data['task'][1:].split()
         image_ids = get_image_ids(self.database_path)
 
         valid_image_names = [name for name in image_names if name in image_ids]
@@ -329,12 +357,21 @@ class MyReconstructionManager:
         assert (all(image_id in self.de_reg_images for image_id in to_reg_image_ids))
 
         self.de_reg_images = [element for element in self.de_reg_images if element not in to_reg_image_ids]
-        recon = my_reconstruction.main(self, self.database_path, self.recon_dir, self.reconstruction_manager, self.mapper, image_to_register=to_reg_image_ids)[0]
+        recon = my_reconstruction.main(self, self.database_path, self.recon_dir, self.reconstruction_manager, self.mapper, image_to_register=to_reg_image_ids, cv=cv, data=data)[0]
         if recon is not None:
             self.export_ply(recon)
             guru.info(
                 f"Reconstruction statistics:\n{recon.summary()}"
             )
+            data['recon_done'] = True
+            data['error'] = None
+        else:
+            data['error'] = "Reconstruction failed when re-registering image(s)."
+            guru.error("Reconstruction failed when re-registering image(s).")
+        
+        # Empty the task
+        data['new_request'] = False
+        data['task'] = None
         print(recon.summary())
     
     def handle_e(self):
@@ -357,21 +394,22 @@ class MyReconstructionManager:
         pycolmap.patch_match_stereo(mvs_path)  # requires compilation with CUDA
         pycolmap.stereo_fusion(mvs_path / "dense.ply", mvs_path)
     
-    def process_action(self, action):
-        if action == 'n':
-            self.handle_n()
-        elif action.startswith('r'):
-            self.handle_r(action)
-        elif action.startswith('a'):
-            self.handle_a(action)
-        elif action == 'e':
-            self.handle_e()
-        elif action == 'd':
-            self.handle_d()
-        elif action == 'q':
+    def process_action(self, cv, data):
+        if data['task'] == 'n':
+            self.handle_n(cv, data)
+        elif data['task'].startswith('r'):
+            self.handle_r(data)
+        elif data['task'].startswith('a'):
+            self.handle_a(cv, data)
+        elif data['task'] == 'e':
+            self.handle_e(data)
+        elif data['task'] == 'd':
+            raise NotImplementedError
+            # self.handle_d(data)
+        elif data['task'] == 'q':
             print("Quitting...")
             return False
-        elif action == 'h':
+        elif data['task'] == 'h':
             print("\n" + "="*30)
             print("HELP")
             print("="*30 + "\n")
@@ -385,53 +423,75 @@ class MyReconstructionManager:
             print("Invalid key. Please press 'h' for help.\n")
         return True
     
-    def main(self):
-        parser = argparse.ArgumentParser()
-        parser.add_argument('--scene_name', type=str, nargs='?', default='test', help='Name of the scene')
-        parser.add_argument('--feature_extractor', type=str, nargs='?', default='superpoint_aachen', help=f'Name of feature extractor. Choose from {list(extract_features.confs.keys())}')
-        parser.add_argument('--feature_matcher', type=str, nargs='?', default='superpoint+lightglue', help=f'Name of feature matcher. Choose from {list(match_features.confs.keys())}')
-        args = parser.parse_args()
+    def main(self, cv, data):
+        with cv:
+            print("Waiting for sufficient images...")
+            while data['num_images'] < 2:
+                cv.wait()
 
-        self.scene_name = args.scene_name
-        feature_extractor = args.feature_extractor
-        feature_matcher = args.feature_matcher
+            parser = argparse.ArgumentParser()
+            parser.add_argument('--scene_name', type=str, nargs='?', default='run', help='Name of the scene')
+            parser.add_argument('--feature_extractor', type=str, nargs='?', default='superpoint_aachen', help=f'Name of feature extractor. Choose from {list(extract_features.confs.keys())}')
+            parser.add_argument('--feature_matcher', type=str, nargs='?', default='superpoint+lightglue', help=f'Name of feature matcher. Choose from {list(match_features.confs.keys())}')
+            args = parser.parse_args()
 
-        self.image_dir = Path(f'temp/images/{self.scene_name}')
-        self.output_path = Path(f'temp/outputs/{self.scene_name}')
-        self.delete_directory_if_exists(self.output_path)
-        self.output_path.mkdir(parents=True, exist_ok=True)
+            self.scene_name = args.scene_name
+            feature_extractor = args.feature_extractor
+            feature_matcher = args.feature_matcher
 
-        self.sfm_pairs = self.output_path / 'pairs-sfm.txt'
-        loc_pairs = self.output_path / 'pairs-loc.txt'
-        self.recon_dir = self.output_path / 'reconstruction'
-        self.features_file = self.output_path / 'features.h5'
-        self.matches_file = self.output_path / 'matches.h5'
-        model_path = self.recon_dir / "0"
-        self.database_path = self.recon_dir / "database.db"
+            self.image_dir = Path(f'temp/images/{self.scene_name}')
+            self.output_path = Path(f'temp/outputs/{self.scene_name}')
+            self.delete_directory_if_exists(self.output_path)
+            self.output_path.mkdir(parents=True, exist_ok=True)
 
-        self.feature_conf = extract_features.confs[feature_extractor]
-        self.matcher_conf = match_features.confs[feature_matcher]
+            self.sfm_pairs = self.output_path / 'pairs-sfm.txt'
+            loc_pairs = self.output_path / 'pairs-loc.txt'
+            self.recon_dir = self.output_path / 'reconstruction'
+            self.features_file = self.output_path / 'features.h5'
+            self.matches_file = self.output_path / 'matches.h5'
+            model_path = self.recon_dir / "0"
+            self.database_path = self.recon_dir / "database.db"
 
-        # 1. Feature extraction and matching
-        references = sorted([str(p.relative_to(self.image_dir)) for p in self.image_dir.iterdir()])
-        self.processed_images = set(references)
-        print(f"References: {references}")
+            self.feature_conf = extract_features.confs[feature_extractor]
+            self.matcher_conf = match_features.confs[feature_matcher]
 
-        print(f"Generating Exhaustive pairs...")    # Creates pairs-sfm.txt
-        pairs_from_exhaustive.main(self.sfm_pairs, image_list=references)
-        print(f"Extracting Features for images...") # Creates features.h5
-        extract_features.main(self.feature_conf, self.image_dir, image_list=references, feature_path=self.features_file)
-        print(f"Matching extracted features...")    # Creates matches.h5
-        match_features.main(self.matcher_conf, self.sfm_pairs, features=self.features_file, matches=self.matches_file)
-        
-        # 2. Generate 3D reconstruction
-        recon = self.init_reconstruction(self.recon_dir, self.image_dir, self.sfm_pairs, self.features_file, self.matches_file, image_list=references)
-        self.export_ply(recon)
+            # 1. Feature extraction and matching
+            references = sorted([str(p.relative_to(self.image_dir)) for p in self.image_dir.iterdir()])
+            self.processed_images = set(references)
+            print(f"References: {references}")
 
-        self.reconstruction_manager, self.mapper = self._instantiate_reconstruction_manager(self.database_path, self.image_dir, model_path)
-        self.de_reg_images = []
+            print(f"Generating Exhaustive pairs...")    # Creates pairs-sfm.txt
+            pairs_from_exhaustive.main(self.sfm_pairs, image_list=references)
+            print(f"Extracting Features for images...") # Creates features.h5
+            extract_features.main(self.feature_conf, self.image_dir, image_list=references, feature_path=self.features_file)
+            print(f"Matching extracted features...")    # Creates matches.h5
+            match_features.main(self.matcher_conf, self.sfm_pairs, features=self.features_file, matches=self.matches_file)
+            
+            # 2. Generate 3D reconstruction
+            recon = self.init_reconstruction(self.recon_dir, self.image_dir, self.sfm_pairs, self.features_file, self.matches_file, image_list=references)
+            self.export_ply(recon)
+
+            self.reconstruction_manager, self.mapper = self._instantiate_reconstruction_manager(self.database_path, self.image_dir, model_path)
+            self.de_reg_images = []
+
+            data['recon_done'] = True
+            data['new_request'] = False
+            cv.notify()
+
+            while True:
+                print("Waiting for new request...")
+                while data['new_request'] == False:
+                    cv.wait()
+                
+                if not self.process_action(cv, data):
+                    break
+
+                data['recon_done'] = True
+                data['new_request'] = False
+                cv.notify()
 
 
 if __name__ == "__main__":
     manager = MyReconstructionManager()
     manager.main()
+

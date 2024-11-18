@@ -105,28 +105,31 @@ def initialize_reconstruction(
 def report_statistics(message, reconstruction):
     guru.info(f"{message}\n{reconstruction.summary()}")
 
-def print_instructions(step, reconstruction=None):
-    print(f"COLMAP is suggesting to perform {step.name}")
-    print("Do you want to skip this step? (y/n)")
+def print_instructions(step, cv=None, data=None):
     skip = False
 
-    # Change this URL to the server URL
-    url = 'http://localhost:7007/input_request'
-    data = {'step_name': step.name}
-    response = requests.post(url, json=data)
+    if data['full_pipeline'] == False:
+        print(f"COLMAP is suggesting to perform {step.name}")
+        print("Do you want to skip this step? (y/n)")
 
-    if response.status_code == 200:
-        user_input = response.json().get('input').lower()
-        if user_input == "y":
-            skip = True
-        elif user_input == "n" or user_input == "":
-            skip = False
     else:
-        print("Failed to notify server about input request.")
+        print(f"COLMAP is suggesting to perform {step.name}")
+        print(f"Proceeding with {step.name} as per user request ({data['full_pipeline']=}).")
+        return skip
+
+    data['recon_done'] = True
+    data['new_request'] = False
+    cv.notify()
+
+    print("Waiting for new request...")
+    while data['new_request'] == False:
+        cv.wait()
+
+    skip = data['skip']
     
     return skip
 
-def reconstruct_sub_model(manager_instance, controller, mapper, mapper_options, reconstruction, image_to_register=None):
+def reconstruct_sub_model(manager_instance, controller, mapper, mapper_options, reconstruction, image_to_register=None, cv=None, data=None):
     """Equivalent to IncrementalMapperController.reconstruct_sub_model(...)"""
     current_step = ReconstructionStep.WAIT
     # register initial pair
@@ -180,6 +183,7 @@ def reconstruct_sub_model(manager_instance, controller, mapper, mapper_options, 
                 if image_to_register is not None:
                     del image_to_register[reg_trial]
                     print(f"{image_to_register=}")
+                manager_instance.export_ply(reconstruction, current_step.name)
                 current_step = ReconstructionStep.TRIANGULATION
                 break
             else:
@@ -196,7 +200,7 @@ def reconstruct_sub_model(manager_instance, controller, mapper, mapper_options, 
         if reg_next_success:
             report_statistics("<<<Reconstrctuion after registering image>>>", reconstruction)
             assert current_step == ReconstructionStep.TRIANGULATION
-            skip = print_instructions(current_step)
+            skip = print_instructions(current_step, cv, data)
             if not skip:
                 mapper.triangulate_image(options.get_triangulation(), next_image_id)
                 manager_instance.export_ply(reconstruction, current_step.name)
@@ -208,7 +212,7 @@ def reconstruct_sub_model(manager_instance, controller, mapper, mapper_options, 
             
             ### Local BA ###
             assert current_step == ReconstructionStep.LOCAL_BA
-            skip = print_instructions(current_step)
+            skip = print_instructions(current_step, cv, data)
             if not skip:
                 # The following is equivalent to mapper.iterative_local_refinement(...)
                 custom_bundle_adjustment.iterative_local_refinement(
@@ -238,7 +242,7 @@ def reconstruct_sub_model(manager_instance, controller, mapper, mapper_options, 
             ### Global BA ###
             if current_step == ReconstructionStep.GLOBAL_BA:
                 assert current_step == ReconstructionStep.GLOBAL_BA
-                skip = print_instructions(current_step)
+                skip = print_instructions(current_step, cv, data)
                 if not skip:
                     iterative_global_refinement(options, mapper_options, mapper)
                     ba_prev_num_points = reconstruction.num_points3D()
@@ -267,7 +271,7 @@ def reconstruct_sub_model(manager_instance, controller, mapper, mapper_options, 
         if mapper.num_shared_reg_images() >= int(options.max_model_overlap):
             break
         if (not reg_next_success) and prev_reg_next_success:
-            skip = print_instructions(ReconstructionStep.GLOBAL_BA, reconstruction)
+            skip = print_instructions(ReconstructionStep.GLOBAL_BA, reconstruction, cv, data)
             if not skip:
                 current_step = ReconstructionStep.GLOBAL_BA
                 iterative_global_refinement(options, mapper_options, mapper)
@@ -280,11 +284,17 @@ def reconstruct_sub_model(manager_instance, controller, mapper, mapper_options, 
         and reconstruction.num_reg_images() != ba_prev_num_reg_images
         and reconstruction.num_points3D != ba_prev_num_points
     ):
-        iterative_global_refinement(options, mapper_options, mapper)
+        skip = print_instructions(ReconstructionStep.GLOBAL_BA, cv, data)
+        if not skip:
+            current_step = ReconstructionStep.GLOBAL_BA
+            iterative_global_refinement(options, mapper_options, mapper)
+            manager_instance.export_ply(reconstruction, current_step.name)
+            report_statistics("<<<Reconstrctuion after Global BA>>>", reconstruction)
+            current_step = ReconstructionStep.WAIT
     return pycolmap.IncrementalMapperStatus.SUCCESS
 
 
-def reconstruct(manager_instance, controller, mapper_options, image_to_register=None):
+def reconstruct(manager_instance, controller, mapper_options, image_to_register=None, cv=None, data=None):
     """Equivalent to IncrementalMapperController.reconstruct(...)"""
     options = controller.options
     reconstruction_manager = controller.reconstruction_manager
@@ -302,7 +312,7 @@ def reconstruct(manager_instance, controller, mapper_options, image_to_register=
             reconstruction_idx = 0
         reconstruction = reconstruction_manager.get(reconstruction_idx)
         status = reconstruct_sub_model(
-            manager_instance, controller, mapper, mapper_options, reconstruction, image_to_register
+            manager_instance, controller, mapper, mapper_options, reconstruction, image_to_register=image_to_register, cv =cv, data=data
         )
         if status == pycolmap.IncrementalMapperStatus.INTERRUPTED:
             mapper.end_reconstruction(False)
@@ -345,14 +355,14 @@ def reconstruct(manager_instance, controller, mapper_options, image_to_register=
             logging.fatal(f"Unknown reconstruction status: {status}")
 
 
-def main_incremental_mapper(manager_instance, controller, image_to_register=None):
+def main_incremental_mapper(manager_instance, controller, image_to_register=None, cv=None, data=None):
     """Equivalent to IncrementalMapperController.run()"""
     timer = pycolmap.Timer()
     timer.start()
     if not controller.load_database():
         return
     init_mapper_options = controller.options.get_mapper()
-    reconstruct(manager_instance, controller, init_mapper_options, image_to_register)
+    reconstruct(manager_instance, controller, init_mapper_options, image_to_register, cv, data)
 
     for i in range(2):  # number of relaxations
         if controller.reconstruction_manager.size() > 0:
@@ -361,12 +371,12 @@ def main_incremental_mapper(manager_instance, controller, image_to_register=None
         init_mapper_options.init_min_num_inliers = int(
             init_mapper_options.init_min_num_inliers / 2
         )
-        reconstruct(manager_instance, controller, init_mapper_options, image_to_register)
+        reconstruct(manager_instance, controller, init_mapper_options, image_to_register, cv, data)
         if controller.reconstruction_manager.size() > 0:
             break
         logging.info("=> Relaxing the initialization constraints")
         init_mapper_options.init_min_tri_angle /= 2
-        reconstruct(manager_instance, controller, init_mapper_options, image_to_register)
+        reconstruct(manager_instance, controller, init_mapper_options, image_to_register, cv, data)
     timer.print_minutes()
 
 
@@ -377,6 +387,8 @@ def main(
     reconstruction_manager,
     mapper,
     image_to_register=None,
+    cv=None,
+    data=None,
 ):
     output_path.mkdir(exist_ok=True, parents=True)
 
@@ -391,7 +403,7 @@ def main(
             pycolmap.IncrementalMapperCallback.NEXT_IMAGE_REG_CALLBACK,
             lambda: print("Next image registered"),
         )
-        main_incremental_mapper(manager_instance, mapper, image_to_register)
+        main_incremental_mapper(manager_instance, mapper, image_to_register, cv, data)
 
     # write and output
     reconstruction_manager.write(output_path)

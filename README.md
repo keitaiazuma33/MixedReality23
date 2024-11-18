@@ -9,20 +9,12 @@ By Keita Kevin Azuma, Jixian Tang, Yang Li, Aron Choo
 
 To run the COLMAP server, run
 '''
-python -m src.colmap_server
+python -m src.mainmain
 '''
+at the top directory.
 
 To run the fake server, run
 '''
-python src/server.py
+python src/client_flask.py
 '''
-
-To run the quest server (1), run
-'''
-python src/quest.py
-'''
-
-To run the quest server (2), run
-'''
-python src/say_no.py
-'''
+at the top directory.
