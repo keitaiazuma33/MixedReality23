@@ -278,7 +278,6 @@ class MyReconstructionManager:
         
         self.overwrite_database(self.image_dir, self.recon_dir, new_images, sfm_new_pairs, self.features_file, self.matches_file, image_list=references)
 
-        model_path = self.recon_dir / "0"
         recon = my_reconstruction.main(self, self.database_path, self.recon_dir, self.reconstruction_manager, self.mapper, image_to_register=None, cv=cv, data=data)[0]
         if recon is not None:
             guru.info(
@@ -329,6 +328,7 @@ class MyReconstructionManager:
         
         if recon is not None:
             self.export_ply(recon)
+            guru.info("Removed Images from Reconstruction")
             guru.info(
                 f"Reconstruction statistics:\n{recon.summary()}"
             )
@@ -454,7 +454,7 @@ class MyReconstructionManager:
             self.recon_dir = self.output_path / 'reconstruction'
             self.features_file = self.output_path / 'features.h5'
             self.matches_file = self.output_path / 'matches.h5'
-            model_path = self.recon_dir / "0"
+            self.model_path = self.recon_dir / "0"
             self.database_path = self.recon_dir / "database.db"
 
             self.feature_conf = extract_features.confs[feature_extractor]
@@ -475,31 +475,28 @@ class MyReconstructionManager:
                 
                 # 2. Generate 3D reconstruction
                 recon = self.init_reconstruction(self.recon_dir, self.image_dir, self.sfm_pairs, self.features_file, self.matches_file, image_list=references)
-                return recon
 
-            recon = initial_step()
+                if recon is not None:
+                    self.export_ply(recon)
 
-            if recon is not None:
-                self.export_ply(recon)
-
-                self.reconstruction_manager, self.mapper = self._instantiate_reconstruction_manager(self.database_path, self.image_dir, model_path)
-                self.de_reg_images = []
-                data['recon_done'] = True
-                data['new_request'] = False
-                cv.notify()
+                    self.reconstruction_manager, self.mapper = self._instantiate_reconstruction_manager(self.database_path, self.image_dir, self.model_path)
+                    self.de_reg_images = []
             
-            else:
+            recon = initial_step()
+            
+            if recon is None:
                 data['error'] = "Reconstruction failed."
-                data['recon_done'] = True
-                data['new_request'] = False
-                cv.notify()
+            data['recon_done'] = True
+            data['new_request'] = False
+            cv.notify()
 
             while True:
                 print("Waiting for new request...")
                 while data['new_request'] == False:
                     cv.wait()
 
-                if not os.path.exists(os.path.join(self.database_path, '0')):
+                if not os.path.exists(self.model_path):
+                    guru.debug(f"Could not find reconstruction at {self.model_path}")
                     guru.info("Making reconstruction from scratch ...")
                     initial_step()
                 
