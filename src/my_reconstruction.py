@@ -234,10 +234,11 @@ def reconstruct_sub_model(manager_instance, controller, mapper, mapper_options, 
                     current_step = ReconstructionStep.GLOBAL_BA
                 else:
                     guru.info("Global refinement can be skipped")
-                    current_step = ReconstructionStep.WAIT
+                    # Ask User if they want to skip global refinement anyways
+                    current_step = ReconstructionStep.GLOBAL_BA
             else:
-                guru.info("Skipping local BA")
-                current_step = ReconstructionStep.WAIT
+                guru.info("Skipped Local BA but continuing with Global BA")
+                current_step = ReconstructionStep.GLOBAL_BA
 
             ### Global BA ###
             if current_step == ReconstructionStep.GLOBAL_BA:
