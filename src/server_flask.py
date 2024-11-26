@@ -24,21 +24,24 @@ def create_flask_server(cv, data):
         metadata = json.loads(request.form['metadata'])
         print(f"Received metadata: {metadata}")
 
-        # Handle image
-        if 'image' not in request.files:
-            return jsonify({"error": "Image not provided"}), 400
-        image = request.files['image']
-        image_path = UPLOAD_FOLDER / image.filename
-        image.save(image_path)
-        print(f"Image saved to {image_path}")
+        # Handle optional image
+        if 'image' in request.files:
+            image = request.files['image']
+            image_path = UPLOAD_FOLDER / image.filename
+            image.save(image_path)
+            print(f"Image saved to {image_path}")
+        else:
+            print("No image provided in the request.")
+            image_path = None            
 
         with cv:
             # Modify shared resource data to add new request
             data['task'] = metadata["task"]
             data['full_pipeline'] = metadata["full_pipeline"]
-            data['skip'] = metadata["continue"]
+            data['skip'] = metadata["skip"]
             
-            data['num_images'] = data['num_images'] + 1
+            if image_path is not None:
+                data['num_images'] = data['num_images'] + 1
 
             data['new_request'] = True
             data['recon_done'] = False

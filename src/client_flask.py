@@ -14,21 +14,30 @@ metadata = {
     "description": "Send image and get results",
     "task": None,
     "full_pipeline": False,
-    "continue": False
+    "skip": False
 }
 # Replace with your image path
 image_path = Path(__file__).parent.parent / 'run/images/test/image01.jpg'
 
 def send_request(metadata, image_path=None):
-    # Send POST request with metadata and image
-    with open(image_path, 'rb') as img_file:
-        files = {
-            "metadata": (None, json.dumps(metadata), "application/json"),
-            "image": (image_path.name, img_file, "image/jpeg")
-        }
-        response = requests.post(url, files=files)
 
-    print("Sent image and metadata to server")
+    files = {
+        "metadata": (None, json.dumps(metadata), "application/json")
+    }
+
+    # Send POST request with metadata and image (if provided)
+    if image_path is not None:
+        try:
+            with open(image_path, 'rb') as img_file:
+                files["image"] = (image_path.name, img_file, "image/jpeg")
+                response = requests.post(url, files=files)
+                print("Sent metadata and image to server")
+        except FileNotFoundError:
+            print(f"Error: Image file {image_path} not found.")
+            return
+    else:
+        response = requests.post(url, files=files)
+        print("Sent metadata to server")
 
     # Handle the multipart response
     if response.status_code == 200:
@@ -76,15 +85,27 @@ if __name__ == "__main__":
     while True:
         # Accept user input for task
         user_input = input("Enter a task (or 'exit' to quit): ")
+
+        if user_input.startswith('n'):
+            try:
+                image_name = user_input.split(' ')[1]
+                print(f"You have specified image name: {image_name}")
+            except IndexError:
+                print("Error: Please specify an image name after 'r'.")
+                continue
         
-        image_directory = Path(__file__).parent.parent / 'temp/images/client'
-        image_files = sorted(glob.glob(str(image_directory / '*')))
-        print(image_files)
-        if image_files:
-            image_path = Path(image_files[-1])
+            image_directory = Path(__file__).parent.parent / 'temp/images/client'
+            image_files = sorted(glob.glob(str(image_directory / '*')))
+            
+            # Check if the specified image exists in the directory
+            matching_files = [f for f in image_files if Path(f).name == image_name]
+            if len(matching_files) == 1:
+                image_path = Path(matching_files[0])
+            else:
+                print(f"Error: The specified image '{image_name}' was not found or multiple matches were found.")
+                continue
         else:
-            print("Waiting for images to be added to the 'temp/images/run' folder...")
-            continue
+            image_path = None
 
         if user_input.lower() == 'exit':
             break
@@ -117,6 +138,7 @@ if __name__ == "__main__":
                 print("Invalid input. Please try again.")
         
         print(f"Sending image {image_path} with metadata {metadata}")
+        print(f"Sending server with image {image_path}")
         send_request(metadata, image_path)
         
         metadata['task'] = None

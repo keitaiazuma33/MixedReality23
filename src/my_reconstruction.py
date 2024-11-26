@@ -272,7 +272,7 @@ def reconstruct_sub_model(manager_instance, controller, mapper, mapper_options, 
         if mapper.num_shared_reg_images() >= int(options.max_model_overlap):
             break
         if (not reg_next_success) and prev_reg_next_success:
-            skip = print_instructions(ReconstructionStep.GLOBAL_BA, reconstruction, cv, data)
+            skip = print_instructions(ReconstructionStep.GLOBAL_BA, cv, data)
             if not skip:
                 current_step = ReconstructionStep.GLOBAL_BA
                 iterative_global_refinement(options, mapper_options, mapper)

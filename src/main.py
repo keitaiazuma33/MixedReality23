@@ -344,7 +344,6 @@ class MyReconstructionManager:
         print(f"{recon.reg_image_ids()=}")
         print(recon.summary())
 
-    
     def handle_a(self, cv, data):
         print("\n" + "="*30)
         print("ADDING BACK SPECIFIED IMAGES...")
@@ -379,7 +378,7 @@ class MyReconstructionManager:
         data['task'] = None
         print(recon.summary())
     
-    def handle_e(self):
+    def handle_e(self, data):
         print("\n" + "="*30)
         print("EXPORTING...")
         print("="*30 + "\n")
@@ -388,6 +387,9 @@ class MyReconstructionManager:
         assert(self.reconstruction_manager.size() <= 1)
         current_recon = self.reconstruction_manager.get(0)
         self.export_ply(current_recon, "Check")
+
+        data['recon_done'] = True
+        data['error'] = None
 
     def handle_d(self):
         print("\n" + "="*30)
@@ -400,7 +402,7 @@ class MyReconstructionManager:
         pycolmap.stereo_fusion(mvs_path / "dense.ply", mvs_path)
     
     def process_action(self, cv, data):
-        if data['task'] == 'n':
+        if data['task'].startswith('n'):
             self.handle_n(cv, data)
         elif data['task'].startswith('r'):
             self.handle_r(data)
