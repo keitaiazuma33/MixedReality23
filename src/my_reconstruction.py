@@ -105,16 +105,22 @@ def initialize_reconstruction(
 def report_statistics(message, reconstruction):
     guru.info(f"{message}\n{reconstruction.summary()}")
 
-def print_instructions(step, cv=None, data=None):
+def print_instructions(step, cv=None, data=None, recommended_by_colmap=True):
     skip = False
 
     if data['full_pipeline'] == False:
-        print(f"COLMAP is suggesting to perform {step.name}")
-        print("Do you want to skip this step? (y/n)")
+        if recommended_by_colmap:
+            message = f"COLMAP is suggesting to perform {step.name}\nDo you want to skip this step? (y/n)"
+        else:
+            message = f"COLMAP is suggesting to SKIP {step.name}\nDo you want to skip this step? (y/n)"
+        print(message)
+        data["user_message"] = message
 
     else:
-        print(f"COLMAP is suggesting to perform {step.name}")
-        print(f"Proceeding with {step.name} as per user request ({data['full_pipeline']=}).")
+        message = f"Proceeding with {step.name} as per user request ({data['full_pipeline']=}).\n"
+        print(message)
+        data["user_message"] += message
+        skip = not recommended_by_colmap
         return skip
 
     data['recon_done'] = True
@@ -243,7 +249,7 @@ def reconstruct_sub_model(manager_instance, controller, mapper, mapper_options, 
             ### Global BA ###
             if current_step == ReconstructionStep.GLOBAL_BA:
                 assert current_step == ReconstructionStep.GLOBAL_BA
-                skip = print_instructions(current_step, cv, data)
+                skip = print_instructions(current_step, cv, data, recommended_by_colmap=controller.check_run_global_refinement(reconstruction, ba_prev_num_reg_images, ba_prev_num_points))
                 if not skip:
                     iterative_global_refinement(options, mapper_options, mapper)
                     ba_prev_num_points = reconstruction.num_points3D()
@@ -272,6 +278,7 @@ def reconstruct_sub_model(manager_instance, controller, mapper, mapper_options, 
         if mapper.num_shared_reg_images() >= int(options.max_model_overlap):
             break
         if (not reg_next_success) and prev_reg_next_success:
+            data["user_message"] += f"COLMAP is suggesting to perform {ReconstructionStep.GLOBAL_BA.name} because the last image registration failed.\n"
             skip = print_instructions(ReconstructionStep.GLOBAL_BA, cv, data)
             if not skip:
                 current_step = ReconstructionStep.GLOBAL_BA
@@ -285,6 +292,7 @@ def reconstruct_sub_model(manager_instance, controller, mapper, mapper_options, 
         and reconstruction.num_reg_images() != ba_prev_num_reg_images
         and reconstruction.num_points3D != ba_prev_num_points
     ):
+        data["user_message"] += f"COLMAP is suggesting to perform {ReconstructionStep.GLOBAL_BA.name} because reconstruction has changed.\n"
         skip = print_instructions(ReconstructionStep.GLOBAL_BA, cv, data)
         if not skip:
             current_step = ReconstructionStep.GLOBAL_BA

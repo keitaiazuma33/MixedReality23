@@ -483,11 +483,16 @@ class MyReconstructionManager:
 
                     self.reconstruction_manager, self.mapper = self._instantiate_reconstruction_manager(self.database_path, self.image_dir, self.model_path)
                     self.de_reg_images = []
+                
+                return recon
             
             recon = initial_step()
             
             if recon is None:
+                data['user_message'] = "Reconstruction failed."
                 data['error'] = "Reconstruction failed."
+            else:
+                data['user_message'] = "Yay! Your initial reconstruction is ready!!!"
             data['recon_done'] = True
             data['new_request'] = False
             cv.notify()
@@ -507,6 +512,7 @@ class MyReconstructionManager:
 
                 data['recon_done'] = True
                 data['new_request'] = False
+                data['user_message'] = "Please specify your next action."
                 cv.notify()
 
 

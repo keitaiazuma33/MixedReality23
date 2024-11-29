@@ -45,6 +45,8 @@ def create_flask_server(cv, data):
 
             data['new_request'] = True
             data['recon_done'] = False
+            if data['num_images'] < 2:
+                data['user_message'] = "Please upload at least 2 images to start the reconstruction."
             cv.notify()
 
             while not (data['recon_done'] or data['num_images'] < 2):
@@ -55,8 +57,11 @@ def create_flask_server(cv, data):
         response_metadata = {
             "status": "success",
             "description": "Processing complete",
+            "user_message": data['user_message'],
             "files": ["cameras.txt", "images.txt", "points3D.txt", "reconstruction.ply"]
         }
+
+        data["user_message"] = ""
 
         # Create a zip archive for the response files
         zip_memory = io.BytesIO()
