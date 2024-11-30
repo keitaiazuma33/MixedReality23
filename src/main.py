@@ -278,7 +278,10 @@ class MyReconstructionManager:
         
         self.overwrite_database(self.image_dir, self.recon_dir, new_images, sfm_new_pairs, self.features_file, self.matches_file, image_list=references)
 
-        recon = my_reconstruction.main(self, self.database_path, self.recon_dir, self.reconstruction_manager, self.mapper, image_to_register=None, cv=cv, data=data)[0]
+        image_ids = get_image_ids(self.database_path)
+        to_reg_image_ids = [image_ids[name] for name in new_images]
+
+        recon = my_reconstruction.main(self, self.database_path, self.recon_dir, self.reconstruction_manager, self.mapper, image_to_register=to_reg_image_ids, cv=cv, data=data)[0]
         if recon is not None:
             guru.info(
                 f"Reconstruction statistics:\n{recon.summary()}"

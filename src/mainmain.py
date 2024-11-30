@@ -18,6 +18,7 @@ data['task'] = None
 data['full_pipeline'] = False
 data['skip'] = False
 data['user_message'] = ""
+data['let_colmap_choose_order'] = False
 
 # Create a Lock and a Condition Variable
 mutex = threading.Lock()

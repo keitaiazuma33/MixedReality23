@@ -39,6 +39,7 @@ def create_flask_server(cv, data):
             data['task'] = metadata["task"]
             data['full_pipeline'] = metadata["full_pipeline"]
             data['skip'] = metadata["skip"]
+            data['let_colmap_choose_order'] = metadata["let_colmap_choose_order"]
             
             if image_path is not None:
                 data['num_images'] = data['num_images'] + 1

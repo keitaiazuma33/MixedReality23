@@ -157,13 +157,20 @@ def reconstruct_sub_model(manager_instance, controller, mapper, mapper_options, 
     ba_prev_num_points = reconstruction.num_points3D()
     reg_next_success, prev_reg_next_success = True, True
     print(f"{image_to_register=}")
+    let_colmap_choose_order = data['let_colmap_choose_order']
     while True:
         current_step = ReconstructionStep.IMAGE_REGISTRATION
         if not (reg_next_success or prev_reg_next_success):
             break
         prev_reg_next_success = reg_next_success
         reg_next_success = False
-        next_images = image_to_register if image_to_register is not None else mapper.find_next_images(mapper_options)
+        if let_colmap_choose_order:
+            colmap_order = mapper.find_next_images(mapper_options)
+            print(f"{colmap_order=}")
+            print(f"{image_to_register=}")
+            image_to_register = [i for i in colmap_order if i in image_to_register]
+            print(f"{image_to_register=}")
+        next_images = image_to_register
         print(f"{next_images=}")
         if len(next_images) == 0:
             break

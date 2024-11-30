@@ -14,7 +14,8 @@ metadata = {
     "description": "Send image and get results",
     "task": None,
     "full_pipeline": False,
-    "skip": False
+    "skip": False,
+    "let_colmap_choose_order": False
 }
 # Replace with your image path
 image_path = Path(__file__).parent.parent / 'run/images/test/image01.jpg'
@@ -83,6 +84,8 @@ def send_request(metadata, image_path=None):
 
 if __name__ == "__main__":
     while True:
+        flag_colmap_order = False
+
         # Accept user input for task
         user_input = input("Enter a task (or 'exit' to quit): ")
 
@@ -103,6 +106,18 @@ if __name__ == "__main__":
                 image_path = Path(matching_files[0])
             else:
                 print(f"Error: The specified image '{image_name}' was not found or multiple matches were found.")
+                continue
+        elif user_input.startswith('a'):
+            try:
+                image_names = user_input.split(' ')[1:]
+                print(f"You have specified image names: {image_names}")
+                print(f"You are trying to re-register {len(image_names)} images.")
+                if len(image_names) >= 2:
+                    flag_colmap_order = True
+                else:
+                    flag_colmap_order = False
+            except IndexError:
+                print("Error: Please specify an image name after 'a'.")
                 continue
         else:
             image_path = None
@@ -136,6 +151,21 @@ if __name__ == "__main__":
                 break
             else:
                 print("Invalid input. Please try again.")
+        
+        if flag_colmap_order:
+            while True:
+                user_input = input("Select between letting COLMAP choose the order or not (y/[n]): ")
+                if user_input in ['y', 'Y', 'yes', 'Yes']:
+                    metadata['let_colmap_choose_order'] = True
+                    print("Setting data['let_colmap_choose_order'] to True")
+                    break
+                elif user_input in ['n', 'N', 'no', 'No', '']:
+                    metadata['let_colmap_choose_order'] = False
+                    print("Setting data['let_colmap_choose_order'] to False")
+                    break
+                else:
+                    print("Invalid input. Please try again.")
+        flag_colmap_order = False
         
         print(f"Sending image {image_path} with metadata {metadata}")
         print(f"Sending server with image {image_path}")
