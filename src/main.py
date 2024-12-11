@@ -262,7 +262,6 @@ class MyReconstructionManager:
         print("ADDING NEW IMAGES...")
         print("="*30 + "\n")
 
-        print(f"Resuming from existing pairs-sfm.txt...")
         # 1. Feature extraction and matching
         references = sorted([str(p.relative_to(self.image_dir)) for p in self.image_dir.iterdir()])
         new_images = [img for img in references if img not in self.processed_images]
@@ -362,14 +361,19 @@ class MyReconstructionManager:
 
         to_reg_image_ids = [image_ids[name] for name in image_names]
         assert (all(image_id in self.de_reg_images for image_id in to_reg_image_ids))
-
+        
         self.de_reg_images = [element for element in self.de_reg_images if element not in to_reg_image_ids]
         recon = my_reconstruction.main(self, self.database_path, self.recon_dir, self.reconstruction_manager, self.mapper, image_to_register=to_reg_image_ids, cv=cv, data=data)[0]
+        
+        # In case pycolmap runs from scratch, ignoring user request
+        self.de_reg_images = list(set(image_ids.values()) - set(self.reconstruction_manager.get(0).reg_image_ids()))
+
         if recon is not None:
             self.export_ply(recon)
             guru.info(
                 f"Reconstruction statistics:\n{recon.summary()}"
             )
+            guru.info(f"{self.reconstruction_manager.get(0).reg_image_ids()=}")
             data['recon_done'] = True
             data['error'] = None
         else:

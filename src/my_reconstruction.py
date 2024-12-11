@@ -114,7 +114,7 @@ def print_instructions(step, cv=None, data=None, recommended_by_colmap=True):
         else:
             message = f"COLMAP is suggesting to SKIP {step.name}\nDo you want to skip this step? (y/n)"
         print(message)
-        data["user_message"] = message
+        data["user_message"] += message
 
     else:
         message = f"Proceeding with {step.name} as per user request ({data['full_pipeline']=}).\n"
@@ -156,6 +156,7 @@ def reconstruct_sub_model(manager_instance, controller, mapper, mapper_options, 
     ba_prev_num_reg_images = reconstruction.num_reg_images()
     ba_prev_num_points = reconstruction.num_points3D()
     reg_next_success, prev_reg_next_success = True, True
+    image_to_register = list(set(image_to_register) - set(reconstruction.reg_image_ids()))
     print(f"{image_to_register=}")
     let_colmap_choose_order = data['let_colmap_choose_order']
     while True:
@@ -285,7 +286,7 @@ def reconstruct_sub_model(manager_instance, controller, mapper, mapper_options, 
         if mapper.num_shared_reg_images() >= int(options.max_model_overlap):
             break
         if (not reg_next_success) and prev_reg_next_success:
-            data["user_message"] += f"COLMAP is suggesting to perform {ReconstructionStep.GLOBAL_BA.name} because the last image registration failed.\n"
+            data["user_message"] = f"COLMAP is suggesting to perform {ReconstructionStep.GLOBAL_BA.name} because the last image registration failed.\n"
             skip = print_instructions(ReconstructionStep.GLOBAL_BA, cv, data)
             if not skip:
                 current_step = ReconstructionStep.GLOBAL_BA
@@ -299,7 +300,7 @@ def reconstruct_sub_model(manager_instance, controller, mapper, mapper_options, 
         and reconstruction.num_reg_images() != ba_prev_num_reg_images
         and reconstruction.num_points3D != ba_prev_num_points
     ):
-        data["user_message"] += f"COLMAP is suggesting to perform {ReconstructionStep.GLOBAL_BA.name} because reconstruction has changed.\n"
+        data["user_message"] = f"COLMAP is suggesting to perform {ReconstructionStep.GLOBAL_BA.name} because reconstruction has changed.\n"
         skip = print_instructions(ReconstructionStep.GLOBAL_BA, cv, data)
         if not skip:
             current_step = ReconstructionStep.GLOBAL_BA
